@@ -30,6 +30,8 @@ def _reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Te
 
 
 def apply_rotary_emb(q, k, freqs_cis):
+    q_dtype = q.dtype
+    k_dtype = k.dtype
     q = q.float().reshape(*q.shape[:-1], -1, 2)
     k = k.float().reshape(*k.shape[:-1], -1, 2)
 
@@ -43,7 +45,7 @@ def apply_rotary_emb(q, k, freqs_cis):
     q_out = torch.stack((q_cos, q_sin), dim=-1).reshape(q.shape).flatten(3)
     k_out = torch.stack((k_cos, k_sin), dim=-1).reshape(k.shape).flatten(3)
 
-    return q_out, k_out
+    return q_out.to(dtype=q_dtype), k_out.to(dtype=k_dtype)
 
 
 class RMSNorm(nn.Module):
@@ -57,10 +59,12 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         output = self._norm(x.float()).type_as(x)
-        return output * self.weight
+        return output * self.weight.to(dtype=output.dtype)
 
 
 def _mlp_hidden_dim(config) -> int:
+    if getattr(config, "intermediate_size", 0):
+        return int(config.intermediate_size)
     hidden_dim = config.n_embd * 4
     hidden_dim = int(2 * hidden_dim / 3)
     hidden_dim = config.multiple_of * (
@@ -72,12 +76,20 @@ def _mlp_hidden_dim(config) -> int:
 class Attention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        head_dim = config.n_embd // config.n_head
-        inner_dim = config.n_head * head_dim
-        self.q_proj = nn.Linear(config.n_embd, inner_dim, bias=False)
-        self.k_proj = nn.Linear(config.n_embd, inner_dim, bias=False)
-        self.v_proj = nn.Linear(config.n_embd, inner_dim, bias=False)
-        self.o_proj = nn.Linear(inner_dim, config.n_embd, bias=False)
+        head_dim = int(getattr(config, "head_dim", 0) or (config.n_embd // config.n_head))
+        n_kv_head = int(getattr(config, "n_kv_head", 0) or config.n_head)
+        q_dim = config.n_head * head_dim
+        kv_dim = n_kv_head * head_dim
+        self.q_proj = nn.Linear(config.n_embd, q_dim, bias=False)
+        self.k_proj = nn.Linear(config.n_embd, kv_dim, bias=False)
+        self.v_proj = nn.Linear(config.n_embd, kv_dim, bias=False)
+        self.o_proj = nn.Linear(q_dim, config.n_embd, bias=False)
+        if getattr(config, "qk_norm", False):
+            self.q_norm = RMSNorm(head_dim, eps=config.rmsnorm_eps)
+            self.k_norm = RMSNorm(head_dim, eps=config.rmsnorm_eps)
+        else:
+            self.q_norm = nn.Identity()
+            self.k_norm = nn.Identity()
 
 
 class MLP(nn.Module):
@@ -95,8 +107,9 @@ class LlamaBlock(nn.Module):
     def __init__(self, config, qargs=None, layer_idx: int = 0):
         super().__init__()
         self.n_head   = config.n_head
+        self.n_kv_head = int(getattr(config, "n_kv_head", 0) or config.n_head)
         self.n_embd   = config.n_embd
-        self.head_dim = config.n_embd // config.n_head
+        self.head_dim = int(getattr(config, "head_dim", 0) or (config.n_embd // config.n_head))
         self.dropout  = config.dropout
         self.qkv_clipping = getattr(config, "qkv_clipping", False)
         self.qkv_clipping_factor = getattr(config, "qkv_clipping_factor", 1.0)
@@ -143,18 +156,24 @@ class LlamaBlock(nn.Module):
         _, q, k, v = self._project_qkv(x)
 
         q = q.view(B, T, self.n_head, self.head_dim)
-        k = k.view(B, T, self.n_head, self.head_dim)
+        k = k.view(B, T, self.n_kv_head, self.head_dim)
+        q = self.attn.q_norm(q)
+        k = self.attn.k_norm(k)
         q, k = apply_rotary_emb(q, k, freqs_cis)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
-        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
+        if self.n_kv_head != self.n_head:
+            repeat = self.n_head // self.n_kv_head
+            k = k.repeat_interleave(repeat, dim=1)
+            v = v.repeat_interleave(repeat, dim=1)
 
         y = F.scaled_dot_product_attention(
             q, k, v, attn_mask=None,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=True,
         )
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.head_dim)
         x = x + self.attn.o_proj(y)
 
         h = self.ln_2(x)
@@ -198,18 +217,24 @@ class LlamaBlock(nn.Module):
             v = v.clamp(min=-c, max=c)
 
         q = q.view(B, T, self.n_head, self.head_dim)
-        k = k.view(B, T, self.n_head, self.head_dim)
+        k = k.view(B, T, self.n_kv_head, self.head_dim)
+        q = self.attn.q_norm(q)
+        k = self.attn.k_norm(k)
         q, k = apply_rotary_emb(q, k, freqs_cis)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
-        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
+        if self.n_kv_head != self.n_head:
+            repeat = self.n_head // self.n_kv_head
+            k = k.repeat_interleave(repeat, dim=1)
+            v = v.repeat_interleave(repeat, dim=1)
 
         attn_out = F.scaled_dot_product_attention(
             q, k, v, attn_mask=None,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=True,
         )
-        attn_out = attn_out.transpose(1, 2).contiguous().view(B, T, C)
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, T, self.n_head * self.head_dim)
 
         hidden, Qx, Sx = FP8AfterAttentionResidual.apply(
             residual, attn_out,
@@ -250,8 +275,9 @@ class Llama(GPTBase):
         self.qargs = qargs
         self._tokenizer = None
 
-        self.head_dim  = config.n_embd // config.n_head
-        self.freqs_cis = precompute_freqs_cis(self.head_dim, config.sequence_length)
+        self.head_dim = int(getattr(config, "head_dim", 0) or (config.n_embd // config.n_head))
+        rope_theta = float(getattr(config, "rope_theta", 10000.0))
+        self.freqs_cis = precompute_freqs_cis(self.head_dim, config.sequence_length, theta=rope_theta)
 
         self.transformer = nn.ModuleDict(dict(
             wte  = nn.Embedding(config.vocab_size, config.n_embd),
@@ -262,6 +288,8 @@ class Llama(GPTBase):
             ln_f = RMSNorm(config.n_embd, eps=config.rmsnorm_eps),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        if getattr(config, "tie_word_embeddings", False):
+            self.lm_head.weight = self.transformer.wte.weight
 
         # Init after shared parameters are constructed. FP8-only modules below
         # have no nn.Parameter children and are registered afterwards so they

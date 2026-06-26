@@ -17,7 +17,7 @@ def get_model(args):
         if getattr(args, "use_pretrained", "none") != "none":
             model.from_pretrained(args.use_pretrained)
         return model
-    elif args.model == "llama":
+    elif args.model in ("llama", "qwen3"):
         return Llama(args)
     else:
         raise KeyError(f"Unknown model '{args.model}'.")

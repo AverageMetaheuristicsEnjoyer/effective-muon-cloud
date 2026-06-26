@@ -316,6 +316,11 @@ class GPTBase(nn.Module):
         no_decay.add("lm_head.weight")
 
         param_dict = {pn: p for pn, p in self.named_parameters()}
+        # Tied weights may appear while walking modules but be omitted from
+        # named_parameters(); keep only optimizer-addressable parameter names.
+        actual_params = set(param_dict)
+        decay &= actual_params
+        no_decay &= actual_params
         inter_params = decay & no_decay
         union_params = decay | no_decay
         assert len(inter_params) == 0, (
