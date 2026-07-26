@@ -20,3 +20,4 @@ wandb
 loguru
 
 bitsandbytes
+opt_einsum

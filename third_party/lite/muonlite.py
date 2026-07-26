@@ -341,6 +341,7 @@ class MuonLite(torch.optim.Optimizer):
         warmup_steps: int = 1000,
         min_lr_ratio: float = 0.1,
         numuon: bool = False,
+        numuon_fast: bool = True,
         numuon_rank_start: float = 1.0,
         numuon_rank_end: float = 0.25,
         numuon_rank_scheduler: str = "cosine",
@@ -382,6 +383,7 @@ class MuonLite(torch.optim.Optimizer):
         self.T_f = 0.5
         self.iter = 0
         self.numuon = bool(numuon)
+        self.numuon_fast = bool(numuon_fast)
         self.numuon_rank_start = numuon_rank_start
         self.numuon_rank_end = numuon_rank_end
         self.numuon_rank_scheduler = numuon_rank_scheduler
@@ -613,8 +615,12 @@ class MuonLite(torch.optim.Optimizer):
                 p.data.add_(update, alpha=-0.2 * lr * math.sqrt(max(m, n)))
 
             # ── Vanilla Muon params (2D, no LITE) ──
+            numuon_fast_active = self.numuon and self.numuon_fast
+            if numuon_fast_active:
+                from .numuon_fast import numuon_fast_step
+                numuon_fast_step(self, group, lr, wd, muon_theta)
             for p in group["params"]:
-                if self.state[p]["use_muon"] != 2:
+                if numuon_fast_active or self.state[p]["use_muon"] != 2:
                     continue
                 g = p.grad
                 if g is None:

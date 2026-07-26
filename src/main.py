@@ -207,6 +207,14 @@ def main(args):
     model = get_model(args).to(args.device)
     print(f"\nModel:\n{model}")
 
+    # ── Tensor-train linears: replace nn.Linear with TTLinear *before* DDP ──
+    if args.use_tt:
+        from models.tt_integration import apply_tt, set_fused, set_modes
+        set_modes(args.tt_modes_d)
+        set_fused(True)
+        apply_tt(model, rank_mid=args.tt_rank)
+        model = model.to(args.device)
+
     # ── Riemannian LoRA: replace Linear modules with RiemannianLoraLinear *before* DDP ──
     if args.opt in ("riemannian_adamw", "riemannian_sgd"):
         from optim.memory_efficient.riemannian_lora import apply_riemannian_lora
@@ -381,6 +389,7 @@ def main(args):
                 numuon_krylov_iters=args.numuon_krylov_iters,
                 numuon_oversample=args.numuon_oversample,
                 numuon_warm_start=args.numuon_warm_start,
+                numuon_fast=args.numuon_fast,
                 numuon_lmo_log_interval=args.numuon_lmo_log_interval,
                 numuon_lmo_output_path=(
                     str(exp_dir / "numuon_lmo.jsonl")

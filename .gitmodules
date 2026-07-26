@@ -1,0 +1,3 @@
+[submodule "torchTT"]
+	path = torchTT
+	url = https://github.com/ion-g-ion/torchTT.git

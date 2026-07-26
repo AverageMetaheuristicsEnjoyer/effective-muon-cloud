@@ -612,6 +612,20 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--numuon-no-warm-start", dest="numuon_warm_start", action="store_false",
         help="Disable warm-starting NuMuon Block Krylov with the previous right singular basis.")
     parser.set_defaults(numuon_warm_start=True)
+    parser.add_argument("--numuon-no-fast", dest="numuon_fast", action="store_false",
+        help="Disable the batched gesvda/CholeskyQR2 fast path and use the reference "
+             "per-matrix Block Krylov implementation.")
+    parser.set_defaults(numuon_fast=True)
+
+    # -- Tensor-train (TT) linear layers -------------------------------------
+    parser.add_argument("--use-tt", action="store_true",
+        help="Replace attention/MLP linears with tensor-train layers "
+             "(fused materialized-W forward; see src/models/tt_integration.py).")
+    parser.add_argument("--tt-rank", type=int, default=64,
+        help="Interior TT bond rank.")
+    parser.add_argument("--tt-modes-d", type=int, default=3,
+        choices=[3, 4, 5, 6, 7, 8, 9, 10],
+        help="Number of TT factors per dimension.")
 
     parser.add_argument("--numuon-lmo-log-interval", type=int, default=0,
         help="Log exact-SVD NuMuon LMO quality every N optimizer steps. 0 disables logging.")
