@@ -28,10 +28,11 @@ def _riffle_kernel(O1, T, B, Q: tl.constexpr, QPAD: tl.constexpr,
     K: tl.constexpr = 4  # nb blocks in stage 1
 
     offs_b = pid_b * BB + tl.arange(0, BB)
+    bm = offs_b < B
     offs_q = tl.arange(0, QPAD)
     qm = offs_q < Q
     src = O1 + offs_b[:, None] * (K * Q) + k * Q + offs_q[None, :]
-    x = tl.load(src, mask=qm[None, :], other=0.0)      # (BB, QPAD) contiguous
+    x = tl.load(src, mask=bm[:, None] & qm[None, :], other=0.0)
 
     x = tl.reshape(x, (BB, JPAD, 2, 2))                # q = j*4 + (hi*2+lo)
     lo0, lo1 = tl.split(x)                             # (BB, JPAD, 2) each
@@ -41,10 +42,11 @@ def _riffle_kernel(O1, T, B, Q: tl.constexpr, QPAD: tl.constexpr,
     offs_j = tl.arange(0, JPAD)
     jm = offs_j < QSUB
     base = offs_b[:, None] * Q + k * QSUB + offs_j[None, :]
-    tl.store(T + 0 * (B * Q) + base, p0, mask=jm[None, :])
-    tl.store(T + 1 * (B * Q) + base, p1, mask=jm[None, :])
-    tl.store(T + 2 * (B * Q) + base, p2, mask=jm[None, :])
-    tl.store(T + 3 * (B * Q) + base, p3, mask=jm[None, :])
+    mask = bm[:, None] & jm[None, :]
+    tl.store(T + 0 * (B * Q) + base, p0, mask=mask)
+    tl.store(T + 1 * (B * Q) + base, p1, mask=mask)
+    tl.store(T + 2 * (B * Q) + base, p2, mask=mask)
+    tl.store(T + 3 * (B * Q) + base, p3, mask=mask)
 
 
 def riffle_triton(out1_storage, B, nb, q):
@@ -52,7 +54,7 @@ def riffle_triton(out1_storage, B, nb, q):
     t = torch.empty(nb, B, q, device=out1_storage.device, dtype=out1_storage.dtype)
     BB = 32
     qpad = triton.next_power_of_2(q)
-    _riffle_kernel[(B // BB, nb)](out1_storage, t, B, q, qpad, BB,
+    _riffle_kernel[(triton.cdiv(B, BB), nb)](out1_storage, t, B, q, qpad, BB,
                                   num_warps=4, num_stages=2)
     return t
 
@@ -73,13 +75,15 @@ def _unriffle_kernel(DT, DO1, B, Q: tl.constexpr, QPAD: tl.constexpr,
     K: tl.constexpr = 4
 
     offs_b = pid_b * BB + tl.arange(0, BB)
+    bm = offs_b < B
     offs_j = tl.arange(0, JPAD)
     jm = offs_j < QSUB
     src = offs_b[:, None] * Q + k * QSUB + offs_j[None, :]
-    p0 = tl.load(DT + 0 * (B * Q) + src, mask=jm[None, :], other=0.0)
-    p1 = tl.load(DT + 1 * (B * Q) + src, mask=jm[None, :], other=0.0)
-    p2 = tl.load(DT + 2 * (B * Q) + src, mask=jm[None, :], other=0.0)
-    p3 = tl.load(DT + 3 * (B * Q) + src, mask=jm[None, :], other=0.0)
+    mask = bm[:, None] & jm[None, :]
+    p0 = tl.load(DT + 0 * (B * Q) + src, mask=mask, other=0.0)
+    p1 = tl.load(DT + 1 * (B * Q) + src, mask=mask, other=0.0)
+    p2 = tl.load(DT + 2 * (B * Q) + src, mask=mask, other=0.0)
+    p3 = tl.load(DT + 3 * (B * Q) + src, mask=mask, other=0.0)
 
     j01 = tl.join(p0, p1)                 # (BB, JPAD, 2)  last axis c1 = l&1
     j23 = tl.join(p2, p3)
@@ -90,7 +94,7 @@ def _unriffle_kernel(DT, DO1, B, Q: tl.constexpr, QPAD: tl.constexpr,
     offs_q = tl.arange(0, QPAD)
     qm = offs_q < Q
     dst = DO1 + offs_b[:, None] * (K * Q) + k * Q + offs_q[None, :]
-    tl.store(dst, x, mask=qm[None, :])
+    tl.store(dst, x, mask=bm[:, None] & qm[None, :])
 
 
 def unriffle_triton(dt, B, nb, q):
@@ -98,7 +102,7 @@ def unriffle_triton(dt, B, nb, q):
     do1 = torch.empty(B, nb, q, device=dt.device, dtype=dt.dtype)
     BB = 32
     qpad = triton.next_power_of_2(q)
-    _unriffle_kernel[(B // BB, nb)](dt, do1, B, q, qpad, BB,
+    _unriffle_kernel[(triton.cdiv(B, BB), nb)](dt, do1, B, q, qpad, BB,
                                     num_warps=4, num_stages=2)
     return do1
 

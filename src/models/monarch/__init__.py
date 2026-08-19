@@ -16,10 +16,28 @@ All optimized paths are numerically exact vs the reference implementation
 from .monarch_linear import MonarchLinear, apply_monarch
 from .monarch_muon import MonarchMuonOptimizer
 from .monarch_ops import patch_monarch_linear
+from .adaptive import (
+    AdaptiveMonarchLinear,
+    active_parameter_count,
+    adaptive_modules,
+    apply_adaptive_monarch,
+    stage_index_for_step,
+    transition_adaptive_model,
+    transition_steps,
+    validate_schedule,
+)
 
 __all__ = [
     "MonarchLinear",
     "apply_monarch",
     "MonarchMuonOptimizer",
     "patch_monarch_linear",
+    "AdaptiveMonarchLinear",
+    "active_parameter_count",
+    "adaptive_modules",
+    "apply_adaptive_monarch",
+    "stage_index_for_step",
+    "transition_adaptive_model",
+    "transition_steps",
+    "validate_schedule",
 ]
