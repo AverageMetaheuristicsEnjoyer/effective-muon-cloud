@@ -1,5 +1,7 @@
 import contextlib
 import io
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ from scripts.monarch_benchmark.benchmark_train_step import (
 )
 from scripts.monarch_benchmark.build_report import (
     comparison,
+    load_results,
     render,
     result_key,
     validate_payload,
@@ -72,7 +75,8 @@ def controls(microbatch=1, **overrides):
     return values
 
 
-def complete_result(model, variant, microbatch, median, *, state_bytes=8, resample_ms=None):
+def complete_result(model, variant, microbatch, median, *, state_bytes=8, resample_ms=None,
+                    uuid="GPU-one", gpu_name="NVIDIA H100 80GB HBM3", exclusive=False):
     return {
         "status": "complete",
         "model": {
@@ -81,10 +85,10 @@ def complete_result(model, variant, microbatch, median, *, state_bytes=8, resamp
             "actual_parameters": model["dense_params_expected"],
         },
         "variant": {"name": variant},
-        "benchmark": controls(microbatch),
+        "benchmark": controls(microbatch, exclusive_gpu=exclusive),
         "gpu": {
-            "uuid": "GPU-one",
-            "name": "NVIDIA H100 80GB HBM3",
+            "uuid": uuid,
+            "name": gpu_name,
             "foreign_processes_before": [],
             "foreign_processes_after": [],
             "contamination_monitor": {"foreign_processes_seen": [], "error": None},
@@ -321,6 +325,24 @@ class ReportTest(unittest.TestCase):
         # steady 2 ms, rebuild 100 ms, one rebuild every 200 steps
         self.assertAlmostEqual(row["cells"]["galore"]["amortized_ms"], 2.0 + 98.0 / 200)
         self.assertIsNone(row["cells"]["dense_adamw"]["resample_ms"])
+        # dense AdamW never rebuilds, so it is charged nothing
+        self.assertAlmostEqual(row["cells"]["dense_adamw"]["amortized_ms"], 1.0)
+
+    def test_rebuild_cost_carries_across_the_batch_size_axis(self):
+        # Measured only at microbatch 1, charged at every microbatch, because a
+        # rebuild factorizes the gradient rather than the batch.
+        results = [
+            complete_result(MODEL_SPECS[0], "dense_adamw", 1, 1.0),
+            complete_result(MODEL_SPECS[0], "galore", 1, 2.0, resample_ms=100.0),
+            complete_result(MODEL_SPECS[0], "dense_adamw", 2, 3.0),
+            complete_result(MODEL_SPECS[0], "galore", 2, 4.0, resample_ms=None),
+        ]
+        compared = comparison(validate_payload({"results": results}))
+        wide = compared["models"][0]["rows"][1]["cells"]["galore"]
+        self.assertIsNone(wide["resample_ms"])
+        self.assertAlmostEqual(wide["resample_extra_ms"], 98.0)
+        self.assertEqual(wide["resample_measured_at_microbatch"], 1)
+        self.assertAlmostEqual(wide["amortized_ms"], 4.0 + 98.0 / 200)
 
     def test_report_keeps_out_of_memory_points_as_results(self):
         results = self.matrix()
@@ -348,6 +370,43 @@ class ReportTest(unittest.TestCase):
         results[-1]["gpu"]["uuid"] = "GPU-two"
         with self.assertRaisesRegex(ValueError, "multiple GPUs"):
             validate_payload({"results": results})
+
+    def test_exclusive_scheduling_downgrades_to_one_card_model(self):
+        # A scheduled card cannot be pinned across jobs, so a resumed cloud
+        # sweep legitimately spans several cards of the same model.
+        results = [
+            complete_result(MODEL_SPECS[0], "dense_adamw", 1, 1.0, uuid="GPU-a", exclusive=True),
+            complete_result(MODEL_SPECS[0], "galore", 1, 2.0, uuid="GPU-b", exclusive=True),
+        ]
+        validated = validate_payload({"results": results})
+        self.assertEqual(validated["gpu_uuids"], ["GPU-a", "GPU-b"])
+        results[1]["gpu"]["name"] = "NVIDIA A100 80GB PCIe"
+        with self.assertRaisesRegex(ValueError, "different GPU models"):
+            validate_payload({"results": results})
+
+    def test_shared_machine_still_requires_one_physical_card(self):
+        results = [
+            complete_result(MODEL_SPECS[0], "dense_adamw", 1, 1.0, uuid="GPU-a"),
+            complete_result(MODEL_SPECS[0], "galore", 1, 2.0, uuid="GPU-b"),
+        ]
+        with self.assertRaisesRegex(ValueError, "multiple GPUs"):
+            validate_payload({"results": results})
+
+    def test_load_results_merges_files_and_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runs = root / "sweep-a" / "runs"
+            runs.mkdir(parents=True)
+            first = complete_result(MODEL_SPECS[0], "dense_adamw", 1, 1.0)
+            (runs / "257m-dense_adamw-bs1.json").write_text(json.dumps(first))
+            second = complete_result(MODEL_SPECS[0], "galore", 1, 2.0)
+            bundle = root / "results.json"
+            bundle.write_text(json.dumps({"results": [second]}))
+            merged = load_results([root / "sweep-a", bundle])
+        self.assertEqual(
+            sorted(result_key(result) for result in merged["results"]),
+            [(MODEL_SPECS[0]["name"], "dense_adamw", 1), (MODEL_SPECS[0]["name"], "galore", 1)],
+        )
 
     def test_result_key_reads_both_payload_shapes(self):
         self.assertEqual(

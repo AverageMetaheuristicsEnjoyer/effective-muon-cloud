@@ -517,7 +517,7 @@ def run(args) -> dict:
         # that the steady-state window never sees, so it gets its own window.
         resample_samples = []
         resample_memory = None
-        if variant["family"] == "memory_efficient":
+        if variant["family"] == "memory_efficient" and not args.skip_resample:
             force_projector_resample(optimizer)
             timed_step(model, optimizer, batches, stream)
             torch.cuda.reset_peak_memory_stats(device)
@@ -581,6 +581,7 @@ def run(args) -> dict:
         "benchmark": {
             **requested_controls(args, args.microbatch, args.accumulation_steps),
             "adamw_fused": args.variant == "dense_adamw",
+            "resample_measured": bool(resample_samples),
             "optimizer_backend": OPTIMIZER_BACKENDS[args.variant],
             "projection_rank": (
                 projection_rank(args, spec)
@@ -637,6 +638,8 @@ def parse_args():
     parser.add_argument("--warmup-steps", type=int, default=3)
     parser.add_argument("--measured-steps", type=int, default=12)
     parser.add_argument("--resample-steps", type=int, default=3)
+    parser.add_argument("--skip-resample", action="store_true",
+                        help="rebuild cost does not depend on batch size, so measure it once")
     parser.add_argument("--monarch-blocks", type=int, default=4)
     parser.add_argument("--density", type=float, default=0.25)
     parser.add_argument("--update-proj-gap", type=int, default=200)

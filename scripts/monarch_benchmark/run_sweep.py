@@ -115,7 +115,8 @@ def load_complete(path: Path, gpu_uuid: str | None, model: dict, variant: dict, 
     ) else None
 
 
-def worker_command(gpu: dict, model: dict, variant: dict, microbatch: int, accumulation: int, output: Path, args) -> list[str]:
+def worker_command(gpu: dict, model: dict, variant: dict, microbatch: int, accumulation: int,
+                   output: Path, args, measure_resample: bool) -> list[str]:
     command = [
         args.python,
         "-m",
@@ -145,10 +146,12 @@ def worker_command(gpu: dict, model: dict, variant: dict, microbatch: int, accum
         command.append("--exclusive-gpu")
     else:
         command += ["--gpu-uuid", gpu["uuid"]]
+    if not measure_resample:
+        command.append("--skip-resample")
     return command
 
 
-def run_worker(gpu: dict, model: dict, variant: dict, microbatch: int, args) -> dict:
+def run_worker(gpu: dict, model: dict, variant: dict, microbatch: int, args, measure_resample: bool) -> dict:
     accumulation = accumulation_steps(args.tokens_per_step, microbatch, args.sequence_length)
     controls = requested_controls(args, microbatch, accumulation)
     output = result_path(args.output_dir, model["name"], variant["name"], microbatch)
@@ -159,7 +162,9 @@ def run_worker(gpu: dict, model: dict, variant: dict, microbatch: int, args) -> 
 
     while True:
         wait_for_selected_gpu(gpu, args)
-        command = worker_command(gpu, model, variant, microbatch, accumulation, output, args)
+        command = worker_command(
+            gpu, model, variant, microbatch, accumulation, output, args, measure_resample
+        )
         environment = os.environ.copy()
         if gpu["index"] is not None:
             environment["CUDA_VISIBLE_DEVICES"] = str(gpu["index"])
@@ -304,7 +309,11 @@ def main():
                         log(f"Skipping {model['label']} / {variant['label']} / microbatch "
                             f"{microbatch}: a smaller microbatch already ran out of memory")
                         continue
-                    payload = run_worker(gpu, model, variant, microbatch, args)
+                    # Rebuilding a projection reads the gradient's shape, not the
+                    # batch, so its cost is measured once at the smallest batch.
+                    payload = run_worker(
+                        gpu, model, variant, microbatch, args, microbatch == min(microbatches)
+                    )
                     if payload.get("status") == "oom":
                         exhausted.add(key)
                     results.append(payload)

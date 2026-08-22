@@ -57,9 +57,16 @@ def validate_payload(payload: dict) -> dict:
     if not complete:
         raise ValueError("every benchmark point ran out of memory")
 
-    uuids = {result["gpu"]["uuid"] for result in complete}
-    if len(uuids) != 1:
-        raise ValueError(f"benchmark used multiple GPUs: {sorted(uuids)}")
+    uuids = sorted({result["gpu"]["uuid"] for result in complete})
+    if all(result["benchmark"].get("exclusive_gpu") for result in complete):
+        # An exclusively scheduled card cannot be pinned across jobs, so the
+        # guarantee downgrades from one card to one card model, and the report
+        # says how many were used.
+        names = {result["gpu"]["name"] for result in complete}
+        if len(names) != 1:
+            raise ValueError(f"benchmark used different GPU models: {sorted(names)}")
+    elif len(uuids) != 1:
+        raise ValueError(f"benchmark used multiple GPUs: {uuids}")
     controls = {
         json.dumps(
             {field: result["benchmark"][field] for field in COMMON_CONTROL_FIELDS},
@@ -90,7 +97,7 @@ def validate_payload(payload: dict) -> dict:
             variant_order.index(result_key(result)[1]),
         ),
     )
-    return {"results": ordered, "complete": complete}
+    return {"results": ordered, "complete": complete, "gpu_uuids": uuids}
 
 
 def cell(result: dict, baseline: dict | None, update_proj_gap: int) -> dict:
@@ -116,13 +123,10 @@ def cell(result: dict, baseline: dict | None, update_proj_gap: int) -> dict:
         "resample_peak_allocated_bytes": (
             result["resample_memory"]["peak_allocated_bytes"] if result.get("resample_memory") else None
         ),
-        # A rebuild happens once every update_proj_gap steps, so this is what a
-        # long run actually pays per step.
-        "amortized_ms": (
-            median_ms + max(0.0, resample_ms - median_ms) / update_proj_gap
-            if resample_ms is not None
-            else median_ms
-        ),
+        "resample_extra_ms": max(0.0, resample_ms - median_ms) if resample_ms is not None else None,
+        # Filled in by amortize(), which carries the rebuild cost across the
+        # batch-size axis it does not depend on.
+        "amortized_ms": median_ms,
     }
     if baseline is not None and baseline.get("status") == "complete":
         entry["speedup_vs_baseline"] = baseline["median_ms"] / median_ms
@@ -133,6 +137,25 @@ def cell(result: dict, baseline: dict | None, update_proj_gap: int) -> dict:
             else None
         )
     return entry
+
+
+def amortize(grid: list[dict], update_proj_gap: int) -> None:
+    """A rebuild reads the gradient's shape, not the batch, so it is measured at
+    one batch size and charged to every batch size at its true frequency."""
+    for model in grid:
+        measured = {}
+        for row in model["rows"]:
+            for name, entry in row["cells"].items():
+                if entry.get("resample_extra_ms") is not None and name not in measured:
+                    measured[name] = (entry["resample_extra_ms"], row["microbatch"])
+        for row in model["rows"]:
+            for name, entry in row["cells"].items():
+                if entry["status"] != "complete" or name not in measured:
+                    continue
+                extra, source = measured[name]
+                entry["amortized_ms"] = entry["median_ms"] + extra / update_proj_gap
+                entry["resample_extra_ms"] = extra
+                entry["resample_measured_at_microbatch"] = source
 
 
 def comparison(validated: dict) -> dict:
@@ -170,6 +193,8 @@ def comparison(validated: dict) -> dict:
                     "rows": rows,
                 }
             )
+
+    amortize(grid, update_proj_gap)
 
     # Largest microbatch each variant still fits, per model: the practical
     # headline of a memory-efficiency benchmark.
@@ -278,11 +303,11 @@ function draw(){const xs=C.microbatches;
     .map(v=>({label:v.label,color:COLORS[v.name],value:first.cells[v.name].resample_ms,
       text:fmt(first.cells[v.name].resample_ms,0)+' ms vs '+fmt(first.cells[v.name].median_ms,0)+' ms'})),'rebuild step, ms');
   table();}
-function table(){const m=model();let html='<table><thead><tr><th>Batch</th><th>Setup</th><th>Median ms</th><th>P10-P90</th><th>Optimizer ms</th><th>Tokens/s</th><th>Peak GB</th><th>State GB</th><th>Proj GB</th><th>Rebuild ms</th><th>Amortized ms</th><th>vs AdamW</th></tr></thead><tbody>';
+function table(){const m=model();let html='<table><thead><tr><th>Batch</th><th>Setup</th><th>Median ms</th><th>P10-P90</th><th>Optimizer ms</th><th>Tokens/s</th><th>Peak GB</th><th>State GB</th><th>Proj GB</th><th>Rebuild +ms</th><th>Amortized ms</th><th>vs AdamW</th></tr></thead><tbody>';
   m.rows.forEach(row=>{C.variants.forEach(v=>{const e=row.cells[v.name];if(!e)return;
     const base=v.name===C.baseline?' class="base"':'';
     if(e.status==='oom'){html+='<tr'+base+'><td>'+row.microbatch+'</td><td>'+v.label+'</td><td class="oom" colspan="10">out of memory</td></tr>';return;}
-    html+='<tr'+base+'><td>'+row.microbatch+'</td><td>'+v.label+'</td><td>'+fmt(e.median_ms)+'</td><td>'+fmt(e.p10_ms)+'-'+fmt(e.p90_ms)+'</td><td>'+fmt(e.optimizer_ms)+'</td><td>'+fmt(e.tokens_per_second/1000,1)+'K</td><td>'+gb(e.peak_allocated_bytes)+'</td><td>'+gb(e.optimizer_state_bytes)+'</td><td>'+gb(e.optimizer_projector_bytes)+'</td><td>'+fmt(e.resample_ms,0)+'</td><td>'+fmt(e.amortized_ms)+'</td><td>'+(e.speedup_vs_baseline?fmt(e.speedup_vs_baseline)+'x':'--')+'</td></tr>';});});
+    html+='<tr'+base+'><td>'+row.microbatch+'</td><td>'+v.label+'</td><td>'+fmt(e.median_ms)+'</td><td>'+fmt(e.p10_ms)+'-'+fmt(e.p90_ms)+'</td><td>'+fmt(e.optimizer_ms)+'</td><td>'+fmt(e.tokens_per_second/1000,1)+'K</td><td>'+gb(e.peak_allocated_bytes)+'</td><td>'+gb(e.optimizer_state_bytes)+'</td><td>'+gb(e.optimizer_projector_bytes)+'</td><td>'+fmt(e.resample_extra_ms,0)+'</td><td>'+fmt(e.amortized_ms)+'</td><td>'+(e.speedup_vs_baseline?fmt(e.speedup_vs_baseline)+'x':'--')+'</td></tr>';});});
   document.getElementById('table').innerHTML=html+'</tbody></table>';}
 document.getElementById('capacity').innerHTML='<table><thead><tr><th>Model</th>'+C.variants.map(v=>'<th>'+v.label+'</th>').join('')+'</tr></thead><tbody>'+
   C.capacity.map(c=>'<tr><td>'+c.label+'</td>'+C.variants.map(v=>'<td>'+(c.fits[v.name]?c.fits[v.name]:'<span class="oom">--</span>')+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
@@ -358,10 +383,16 @@ def conclusions(comparison_data: dict) -> list[str]:
     return lines
 
 
-def method(comparison_data: dict, controls: dict, exclusive: bool) -> list[str]:
+def method(comparison_data: dict, controls: dict, exclusive: bool, uuids: list[str]) -> list[str]:
+    cards = (
+        "one exclusively scheduled GPU"
+        if len(uuids) == 1
+        else f"{len(uuids)} exclusively scheduled GPUs of the same model"
+    )
     exclusivity = (
-        "The GPU was exclusively scheduled for the job, so no foreign-process polling was possible "
-        "or necessary; results are labelled accordingly."
+        f"Points ran on {cards}, so no foreign-process polling was possible or necessary. "
+        "A scheduled card cannot be pinned across jobs, so where more than one was used the "
+        "control is same card model rather than same physical card."
         if exclusive
         else f"All points used one physical GPU UUID, with three idle checks before selection, "
         f"continuous {controls['contamination_poll_seconds']} s process polling during each trial, "
@@ -378,7 +409,9 @@ def method(comparison_data: dict, controls: dict, exclusive: bool) -> list[str]:
         f"steps, which is longer than the measured window, so the median is a clean steady-state "
         f"step. The rebuild is measured separately in its own window with the gap forced to 1, with "
         f"its own peak-memory reset, because the FP32 factorization workspace never appears in the "
-        f"steady state. The amortized column adds that rebuild cost back at its true frequency.",
+        f"steady state. A rebuild factorizes the gradient, whose shape does not depend on the "
+        f"batch, so it is measured once per model and optimizer and charged to every batch size; "
+        f"the amortized column adds it back at its true frequency.",
         f"Models run eager with BF16 parameters, gradients, and nonscalar momentum/moment state; "
         f"scalar counters may remain FP32. Projection matrices are BF16 and are counted in the "
         f"optimizer-state figure, which is a fix over the earlier report where projector objects "
@@ -388,29 +421,46 @@ def method(comparison_data: dict, controls: dict, exclusive: bool) -> list[str]:
     ]
 
 
+def load_results(paths: list[Path]) -> dict:
+    """Accepts a sweep results.json or an output directory of per-point files,
+    so parallel jobs writing into their own directories still make one report."""
+    results = []
+    for path in paths:
+        if path.is_dir():
+            runs = path / "runs"
+            for entry in sorted((runs if runs.is_dir() else path).glob("*.json")):
+                results.append(json.loads(entry.read_text()))
+        else:
+            results.extend(json.loads(path.read_text()).get("results", []))
+    return {"results": results}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--input", required=True, type=Path, nargs="+",
+                        help="results.json files or sweep output directories")
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    raw = json.loads(args.input.read_text())
-    validated = validate_payload(raw)
+    validated = validate_payload(load_results(args.input))
     comparison_data = comparison(validated)
     reference = validated["complete"][0]
     controls = {field: reference["benchmark"][field] for field in COMMON_CONTROL_FIELDS}
     payload = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "source": str(args.input.resolve()),
+        "source": ", ".join(str(path.resolve()) for path in args.input),
+        "gpu_uuids": validated["gpu_uuids"],
         "gpu_name": reference["gpu"]["name"],
         "controls": controls,
         "comparison": comparison_data,
         "headline": headline(comparison_data, controls),
         "conclusions": conclusions(comparison_data),
-        "method": method(comparison_data, controls, bool(controls.get("exclusive_gpu"))),
+        "method": method(
+            comparison_data, controls, bool(controls.get("exclusive_gpu")), validated["gpu_uuids"]
+        ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(render(payload))
