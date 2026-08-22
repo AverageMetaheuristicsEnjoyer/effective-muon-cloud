@@ -25,6 +25,23 @@ if [ "${1:-}" = "peek" ]; then
     exit 0
 fi
 
+if [ "${1:-}" = "disk" ]; then
+    # ENOSPC in the results directory has outlived a df that reported free
+    # space, so report the file quota and probe every volume for a write.
+    df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 2>&1
+    df -i /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 2>&1
+    echo "recorded points: $(ls -1 "$RESULTS/results/runs" 2>/dev/null | wc -l)"
+    for target in "$RESULTS/results" /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3; do
+        if probe=$(mktemp "$target/.membench-probe.XXXXXX" 2>&1); then
+            echo "writable: $target"
+            rm -f "$probe"
+        else
+            echo "NOT writable: $target ($probe)"
+        fi
+    done
+    exit 0
+fi
+
 LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
 
 {
