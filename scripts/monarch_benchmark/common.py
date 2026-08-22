@@ -63,26 +63,38 @@ MODEL_SPECS = (
 )
 
 VARIANTS = (
-    {"name": "monarch_muon", "label": "Monarch-Muon"},
-    {"name": "dense_adamw", "label": "Dense AdamW"},
-    {"name": "dense_muon", "label": "Dense Muon"},
+    {"name": "monarch_muon", "label": "Monarch-Muon", "family": "monarch"},
+    {"name": "dense_adamw", "label": "Dense AdamW", "family": "dense"},
+    {"name": "dense_muon", "label": "Dense Muon", "family": "dense"},
+    {"name": "galore", "label": "GaLore", "family": "memory_efficient"},
+    {"name": "frugal", "label": "FRUGAL", "family": "memory_efficient"},
+    {"name": "apollo", "label": "APOLLO", "family": "memory_efficient"},
+    {"name": "apollo_mini", "label": "APOLLO-mini", "family": "memory_efficient"},
+    {"name": "fira", "label": "Fira", "family": "memory_efficient"},
 )
 
-HARNESS_REVISION = 1
+MICROBATCHES = (1, 2, 4, 8, 16)
 
+DEFAULT_SEQUENCE_LENGTH = 1024
+DEFAULT_TOKENS_PER_STEP = 16384
+
+HARNESS_REVISION = 2
+
+# Held identical across every point of a sweep; build_report refuses a mix.
 COMMON_CONTROL_FIELDS = (
     "harness_revision",
     "storage_dtype",
     "autocast_dtype",
     "optimizer_moment_dtype",
     "sequence_length",
-    "microbatch",
-    "accumulation_steps",
     "tokens_per_step",
     "warmup_steps",
     "measured_steps",
     "compile_model",
     "monarch_blocks",
+    "density",
+    "update_proj_gap",
+    "resample_steps",
     "lr",
     "momentum",
     "betas",
@@ -90,7 +102,11 @@ COMMON_CONTROL_FIELDS = (
     "eps",
     "seed",
     "contamination_poll_seconds",
+    "exclusive_gpu",
 )
+
+# Varied by the sweep, so they identify a point rather than the sweep.
+POINT_CONTROL_FIELDS = ("microbatch", "accumulation_steps")
 
 
 def model_spec(name: str) -> dict:
@@ -105,6 +121,45 @@ def variant_spec(name: str) -> dict:
         if spec["name"] == name:
             return dict(spec)
     raise KeyError(f"unknown benchmark variant {name!r}")
+
+
+def accumulation_steps(tokens_per_step: int, microbatch: int, sequence_length: int) -> int:
+    tokens_per_microstep = microbatch * sequence_length
+    if tokens_per_step % tokens_per_microstep:
+        raise ValueError(
+            f"{tokens_per_step} tokens per step is not divisible by "
+            f"microbatch {microbatch} x sequence length {sequence_length}"
+        )
+    return tokens_per_step // tokens_per_microstep
+
+
+def requested_controls(args, microbatch: int, accumulation: int) -> dict:
+    """The control surface a result must reproduce to be reused instead of rerun."""
+    return {
+        "harness_revision": HARNESS_REVISION,
+        "storage_dtype": "bfloat16",
+        "autocast_dtype": "bfloat16",
+        "optimizer_moment_dtype": "bfloat16",
+        "sequence_length": args.sequence_length,
+        "microbatch": microbatch,
+        "accumulation_steps": accumulation,
+        "tokens_per_step": args.sequence_length * microbatch * accumulation,
+        "warmup_steps": args.warmup_steps,
+        "measured_steps": args.measured_steps,
+        "compile_model": False,
+        "monarch_blocks": args.monarch_blocks,
+        "density": args.density,
+        "update_proj_gap": args.update_proj_gap,
+        "resample_steps": args.resample_steps,
+        "lr": args.lr,
+        "momentum": args.momentum,
+        "betas": [args.beta1, args.beta2],
+        "weight_decay": args.weight_decay,
+        "eps": args.eps,
+        "seed": args.seed,
+        "contamination_poll_seconds": args.contamination_poll_seconds,
+        "exclusive_gpu": args.exclusive_gpu,
+    }
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -251,6 +306,13 @@ def result_is_complete(payload: dict, *, gpu_uuid: str | None = None) -> bool:
     return bool(samples) and requested == len(samples)
 
 
+def result_is_recorded(payload: dict, *, gpu_uuid: str | None = None) -> bool:
+    """A point is finished once it either measured cleanly or ran out of memory."""
+    if payload.get("status") == "oom":
+        return gpu_uuid is None or payload.get("gpu_uuid") == gpu_uuid
+    return result_is_complete(payload, gpu_uuid=gpu_uuid)
+
+
 def result_matches_request(
     payload: dict,
     *,
@@ -259,8 +321,15 @@ def result_matches_request(
     variant_name: str,
     controls: dict,
 ) -> bool:
-    if not result_is_complete(payload, gpu_uuid=gpu_uuid):
+    if not result_is_recorded(payload, gpu_uuid=gpu_uuid):
         return False
+    if payload.get("status") == "oom":
+        # An OOM payload carries only the identity and the controls it was asked for.
+        return (
+            payload.get("model_size") == model_name
+            and payload.get("variant") == variant_name
+            and payload.get("requested_controls") == controls
+        )
     if payload.get("model", {}).get("name") != model_name:
         return False
     if payload.get("variant", {}).get("name") != variant_name:

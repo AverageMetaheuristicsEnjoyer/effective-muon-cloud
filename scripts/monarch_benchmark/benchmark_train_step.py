@@ -28,16 +28,32 @@ from models.monarch import (  # noqa: E402
     apply_monarch,
     patch_monarch_linear,
 )
+from optim.memory_efficient.apollo import APOLLOAdamW  # noqa: E402
+from optim.memory_efficient.fira import FiraAdamW, GaLoreAdamW  # noqa: E402
+from optim.memory_efficient.frugal import BlockAdamW  # noqa: E402
 from optim.sota_opt import dion  # noqa: E402
 from scripts.monarch_benchmark.common import (  # noqa: E402
-    HARNESS_REVISION,
+    DEFAULT_SEQUENCE_LENGTH,
+    VARIANTS,
     atomic_write_json,
     foreign_compute_apps,
     gpu_snapshot,
     model_spec,
+    requested_controls,
     summarize,
     variant_spec,
 )
+
+OPTIMIZER_BACKENDS = {
+    "monarch_muon": "MonarchMuonOptimizer",
+    "dense_adamw": "torch.optim.AdamW",
+    "dense_muon": "dion.Muon",
+    "galore": "fira.GaLoreAdamW",
+    "frugal": "frugal.BlockAdamW",
+    "apollo": "apollo.APOLLOAdamW",
+    "apollo_mini": "apollo.APOLLOAdamW",
+    "fira": "fira.FiraAdamW",
+}
 
 
 class GPUContaminationError(RuntimeError):
@@ -47,10 +63,11 @@ class GPUContaminationError(RuntimeError):
 class ContaminationMonitor:
     """Poll compute-process ownership while warmup and measurement are active."""
 
-    def __init__(self, gpu_uuid: str, allowed_pids: set[int], interval_seconds: float):
+    def __init__(self, gpu_uuid: str, allowed_pids: set[int], interval_seconds: float, *, enabled: bool = True):
         self.gpu_uuid = gpu_uuid
         self.allowed_pids = allowed_pids
         self.interval_seconds = interval_seconds
+        self.enabled = enabled
         self.foreign_processes: list[dict] = []
         self.error: str | None = None
         self._stop = threading.Event()
@@ -70,9 +87,13 @@ class ContaminationMonitor:
                 return
 
     def start(self) -> None:
+        if not self.enabled:
+            return
         self._thread.start()
 
     def stop(self) -> None:
+        if not self.enabled:
+            return
         self._stop.set()
         self._thread.join(timeout=max(2.0, self.interval_seconds * 4))
         if self._thread.is_alive():
@@ -120,6 +141,64 @@ def dense_parameter_groups(model: Llama) -> list[dict]:
         group["params"] = [by_name[name] for name in specification["params"]]
         groups.append(group)
     return groups
+
+
+def projection_rank(args, spec: dict) -> int:
+    """APOLLO-mini is rank-1 by construction; the rest follow the training
+    factory's rank = density x hidden size (src/optim/optimization.py)."""
+    if args.variant == "apollo_mini":
+        return 1
+    return max(1, int(args.density * spec["n_embd"]))
+
+
+def build_memory_efficient_optimizer(args, spec: dict, model: Llama):
+    """Mirrors the group wiring src/optim/optimization.py::get_optimizer applies,
+    driven by the is_proj_params flag from model.get_parameter_group_specs()."""
+    groups = dense_parameter_groups(model)
+    adamw_kwargs = {
+        "lr": args.lr,
+        "betas": (args.beta1, args.beta2),
+        "eps": args.eps,
+        "weight_decay": args.weight_decay,
+        "no_deprecation_warning": True,
+    }
+
+    if args.variant == "frugal":
+        # FRUGAL holds moments only for the currently active blocks and updates
+        # the rest with SignSGD, so it carries no projection matrices at all.
+        return BlockAdamW(
+            groups,
+            update_gap=args.update_proj_gap,
+            density=args.density,
+            block_order="random",
+            inactive_update_rule="sign_sgd",
+            **adamw_kwargs,
+        )
+
+    for group in groups:
+        if not group.get("is_proj_params", False):
+            continue
+        group["rank"] = projection_rank(args, spec)
+        group["update_proj_gap"] = args.update_proj_gap
+        if args.variant == "galore":
+            group["alpha"] = 1.0
+            group["proj_type"] = args.proj_side
+        elif args.variant == "fira":
+            group["alpha"] = args.fira_alpha
+            group["proj_side"] = args.proj_side
+            group["proj_type"] = args.proj_type
+            group["reset_statistics"] = True
+        else:
+            group["proj"] = args.apollo_proj
+            group["scale"] = 1.0
+            group["scale_type"] = "tensor" if args.variant == "apollo_mini" else "channel"
+            group["proj_type"] = args.proj_side
+
+    if args.variant == "galore":
+        return GaLoreAdamW(groups, **adamw_kwargs)
+    if args.variant == "fira":
+        return FiraAdamW(groups, **adamw_kwargs)
+    return APOLLOAdamW(groups, scale_front=False, **adamw_kwargs)
 
 
 def build_model_and_optimizer(args, spec: dict, device: torch.device):
@@ -182,41 +261,79 @@ def build_model_and_optimizer(args, spec: dict, device: torch.device):
             adamw_lr_scale=1.0,
             dampening=0.0,
         )
+    elif variant_spec(args.variant)["family"] == "memory_efficient":
+        optimizer = build_memory_efficient_optimizer(args, spec, model)
     else:
         raise ValueError(args.variant)
 
     return model, optimizer
 
 
-def tensor_bytes(value) -> int:
+def _attribute_values(value, seen: set[int]):
+    """Projectors are plain objects that keep their matrices in attributes
+    (GaLoreProjector.ortho_matrix, CoordinateProjector.indices), so walking only
+    tensors and containers would count them as zero bytes."""
+    attributes = getattr(value, "__dict__", None)
+    if attributes is None or id(value) in seen:
+        return ()
+    seen.add(id(value))
+    return attributes.values()
+
+
+def tensor_bytes(value, seen: set[int] | None = None) -> int:
     if isinstance(value, torch.Tensor):
         local = value.to_local() if hasattr(value, "to_local") else value
         return local.numel() * local.element_size()
+    seen = set() if seen is None else seen
     if isinstance(value, dict):
-        return sum(tensor_bytes(item) for item in value.values())
+        return sum(tensor_bytes(item, seen) for item in value.values())
     if isinstance(value, (tuple, list)):
-        return sum(tensor_bytes(item) for item in value)
-    return 0
+        return sum(tensor_bytes(item, seen) for item in value)
+    return sum(tensor_bytes(item, seen) for item in _attribute_values(value, seen))
 
 
-def tensor_dtypes(value, *, nonscalar_only: bool = False) -> set[str]:
+def tensor_dtypes(value, *, nonscalar_only: bool = False, seen: set[int] | None = None) -> set[str]:
     if isinstance(value, torch.Tensor):
         local = value.to_local() if hasattr(value, "to_local") else value
         if nonscalar_only and local.numel() <= 1:
             return set()
         return {str(local.dtype).removeprefix("torch.")}
+    seen = set() if seen is None else seen
     if isinstance(value, dict):
-        collections = [
-            tensor_dtypes(item, nonscalar_only=nonscalar_only)
-            for item in value.values()
-        ]
-        return set().union(*collections) if collections else set()
-    if isinstance(value, (tuple, list)):
-        collections = [
-            tensor_dtypes(item, nonscalar_only=nonscalar_only) for item in value
-        ]
-        return set().union(*collections) if collections else set()
-    return set()
+        items = value.values()
+    elif isinstance(value, (tuple, list)):
+        items = value
+    else:
+        items = _attribute_values(value, seen)
+    collections = [
+        tensor_dtypes(item, nonscalar_only=nonscalar_only, seen=seen) for item in items
+    ]
+    return set().union(*collections) if collections else set()
+
+
+def moment_state(optimizer) -> dict:
+    """Optimizer state without the projectors, i.e. the moments whose storage
+    dtype the benchmark controls."""
+    return {
+        parameter: {key: value for key, value in state.items() if key != "projector"}
+        for parameter, state in optimizer.state.items()
+    }
+
+
+def projector_state(optimizer) -> list:
+    return [state["projector"] for state in optimizer.state.values() if "projector" in state]
+
+
+def force_projector_resample(optimizer) -> None:
+    """Make every following step rebuild its projection. GaLore/Fira/APOLLO hold
+    the gap on the projector and on the group; FRUGAL holds it on the group only."""
+    for group in optimizer.param_groups:
+        for key in ("update_proj_gap", "update_gap"):
+            if key in group:
+                group[key] = 1
+    for projector in projector_state(optimizer):
+        if hasattr(projector, "update_proj_gap"):
+            projector.update_proj_gap = 1
 
 
 def timed_step(model, optimizer, batches, stream: torch.cuda.Stream) -> dict:
@@ -265,6 +382,28 @@ def timed_step(model, optimizer, batches, stream: torch.cuda.Stream) -> dict:
     }
 
 
+METRICS = (
+    "host_total_ms",
+    "gpu_total_ms",
+    "forward_ms",
+    "backward_ms",
+    "optimizer_ms",
+    "tokens_per_second",
+)
+
+
+def measure(model, optimizer, batches, stream, steps: int, tokens_per_step: int, label: str) -> list[dict]:
+    samples = []
+    for iteration in range(steps):
+        sample = timed_step(model, optimizer, batches, stream)
+        if not math.isfinite(sample["loss"]):
+            raise RuntimeError(f"non-finite {label} loss at {iteration}: {sample['loss']}")
+        sample["iteration"] = iteration
+        sample["tokens_per_second"] = tokens_per_step / (sample["host_total_ms"] / 1000.0)
+        samples.append(sample)
+    return samples
+
+
 def run(args) -> dict:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required")
@@ -277,7 +416,19 @@ def run(args) -> dict:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    initial_foreign = foreign_compute_apps(args.gpu_uuid, {os.getpid()})
+    # An exclusively scheduled GPU (a one-card cloud job) has no other compute
+    # processes to find and often no usable nvidia-smi process view, so identity
+    # comes from the driver through torch instead.
+    gpu_uuid = args.gpu_uuid or f"GPU-{torch.cuda.get_device_properties(device).uuid}"
+    allowed_pids = {os.getpid()}
+
+    def foreign_now() -> list[dict]:
+        return [] if args.exclusive_gpu else foreign_compute_apps(gpu_uuid, allowed_pids)
+
+    def telemetry() -> dict | None:
+        return None if args.exclusive_gpu else gpu_snapshot(gpu_uuid)
+
+    initial_foreign = foreign_now()
     if initial_foreign:
         raise GPUContaminationError(
             f"GPU became occupied before model construction: {initial_foreign}"
@@ -321,14 +472,14 @@ def run(args) -> dict:
     stream.wait_stream(torch.cuda.current_stream(device))
     stream.synchronize()
 
-    allowed_pids = {os.getpid()}
-    before_warmup = foreign_compute_apps(args.gpu_uuid, allowed_pids)
+    before_warmup = foreign_now()
     if before_warmup:
         raise GPUContaminationError(f"GPU became occupied before warmup: {before_warmup}")
     monitor = ContaminationMonitor(
-        args.gpu_uuid,
+        gpu_uuid,
         allowed_pids,
         args.contamination_poll_seconds,
+        enabled=not args.exclusive_gpu,
     )
     monitor.start()
     try:
@@ -338,21 +489,45 @@ def run(args) -> dict:
                 raise RuntimeError(f"non-finite warmup loss: {sample['loss']}")
 
         torch.cuda.reset_peak_memory_stats(device)
-        telemetry_before = gpu_snapshot(args.gpu_uuid)
-        before_measurement = foreign_compute_apps(args.gpu_uuid, allowed_pids)
+        telemetry_before = telemetry()
+        before_measurement = foreign_now()
         if before_measurement:
             raise GPUContaminationError(
                 f"GPU became occupied before measurement: {before_measurement}"
             )
 
-        samples = []
-        for iteration in range(args.measured_steps):
-            sample = timed_step(model, optimizer, batches, stream)
-            if not math.isfinite(sample["loss"]):
-                raise RuntimeError(f"non-finite measured loss at {iteration}: {sample['loss']}")
-            sample["iteration"] = iteration
-            sample["tokens_per_second"] = tokens_per_step / (sample["host_total_ms"] / 1000.0)
-            samples.append(sample)
+        # The projections were built during warmup and update_proj_gap is larger
+        # than this window, so these steps are the steady state between rebuilds.
+        samples = measure(
+            model, optimizer, batches, stream, args.measured_steps, tokens_per_step, "measured"
+        )
+        memory = {
+            "model_bytes": sum(tensor_bytes(parameter) for parameter in model.parameters()),
+            "gradient_bytes_nominal": sum(
+                tensor_bytes(parameter) for parameter in model.parameters()
+            ),
+            "optimizer_state_bytes": tensor_bytes(optimizer.state),
+            "optimizer_moment_bytes": tensor_bytes(moment_state(optimizer)),
+            "optimizer_projector_bytes": tensor_bytes(projector_state(optimizer)),
+            "peak_allocated_bytes": torch.cuda.max_memory_allocated(device),
+            "peak_reserved_bytes": torch.cuda.max_memory_reserved(device),
+        }
+
+        # Rebuilding a projection costs both time and a transient FP32 workspace
+        # that the steady-state window never sees, so it gets its own window.
+        resample_samples = []
+        resample_memory = None
+        if variant["family"] == "memory_efficient":
+            force_projector_resample(optimizer)
+            timed_step(model, optimizer, batches, stream)
+            torch.cuda.reset_peak_memory_stats(device)
+            resample_samples = measure(
+                model, optimizer, batches, stream, args.resample_steps, tokens_per_step, "resample"
+            )
+            resample_memory = {
+                "peak_allocated_bytes": torch.cuda.max_memory_allocated(device),
+                "peak_reserved_bytes": torch.cuda.max_memory_reserved(device),
+            }
     finally:
         monitor.stop()
 
@@ -363,16 +538,18 @@ def run(args) -> dict:
             f"GPU was contaminated during warmup or measurement: {monitor.foreign_processes}"
         )
 
-    telemetry_after = gpu_snapshot(args.gpu_uuid)
-    after_measurement = foreign_compute_apps(args.gpu_uuid, allowed_pids)
+    telemetry_after = telemetry()
+    after_measurement = foreign_now()
     if after_measurement:
         raise GPUContaminationError(
             f"GPU was contaminated during measurement: {after_measurement}"
         )
 
+    moments = moment_state(optimizer)
+    projectors = projector_state(optimizer)
     optimizer_state_dtypes = sorted(tensor_dtypes(optimizer.state))
     optimizer_nonscalar_state_dtypes = sorted(
-        tensor_dtypes(optimizer.state, nonscalar_only=True)
+        tensor_dtypes(moments, nonscalar_only=True)
     )
     if optimizer_nonscalar_state_dtypes != ["bfloat16"]:
         raise RuntimeError(
@@ -380,15 +557,19 @@ def run(args) -> dict:
             f"{optimizer_nonscalar_state_dtypes}"
         )
 
-    metrics = (
-        "host_total_ms",
-        "gpu_total_ms",
-        "forward_ms",
-        "backward_ms",
-        "optimizer_ms",
-        "tokens_per_second",
+    memory.update(
+        {
+            "optimizer_state_dtypes": optimizer_state_dtypes,
+            "optimizer_nonscalar_state_dtypes": optimizer_nonscalar_state_dtypes,
+            "optimizer_projector_dtypes": sorted(tensor_dtypes(projectors)),
+        }
     )
-    summary = {metric: summarize([sample[metric] for sample in samples]) for metric in metrics}
+    summary = {metric: summarize([sample[metric] for sample in samples]) for metric in METRICS}
+    resample_summary = (
+        {metric: summarize([sample[metric] for sample in resample_samples]) for metric in METRICS}
+        if resample_samples
+        else None
+    )
     result = {
         "status": "complete",
         "model": {
@@ -398,62 +579,40 @@ def run(args) -> dict:
         },
         "variant": variant,
         "benchmark": {
-            "harness_revision": HARNESS_REVISION,
-            "storage_dtype": "bfloat16",
-            "autocast_dtype": "bfloat16",
-            "optimizer_moment_dtype": "bfloat16",
-            "sequence_length": args.sequence_length,
-            "microbatch": args.microbatch,
-            "accumulation_steps": args.accumulation_steps,
-            "tokens_per_step": tokens_per_step,
-            "warmup_steps": args.warmup_steps,
-            "measured_steps": args.measured_steps,
-            "compile_model": False,
-            "monarch_blocks": args.monarch_blocks,
-            "lr": args.lr,
-            "momentum": args.momentum,
-            "betas": [args.beta1, args.beta2],
-            "weight_decay": args.weight_decay,
-            "eps": args.eps,
-            "seed": args.seed,
-            "contamination_poll_seconds": args.contamination_poll_seconds,
+            **requested_controls(args, args.microbatch, args.accumulation_steps),
             "adamw_fused": args.variant == "dense_adamw",
-            "optimizer_backend": {
-                "monarch_muon": "MonarchMuonOptimizer",
-                "dense_adamw": "torch.optim.AdamW",
-                "dense_muon": "dion.Muon",
-            }[args.variant],
-            "newton_schulz_steps": None if args.variant == "dense_adamw" else 5,
+            "optimizer_backend": OPTIMIZER_BACKENDS[args.variant],
+            "projection_rank": (
+                projection_rank(args, spec)
+                if variant["family"] == "memory_efficient" and args.variant != "frugal"
+                else None
+            ),
+            "newton_schulz_steps": 5 if args.variant in ("monarch_muon", "dense_muon") else None,
             "cuda_timing": "events on a dedicated stream; device-wide sync at step end",
         },
         "gpu": {
-            "uuid": args.gpu_uuid,
+            "uuid": gpu_uuid,
             "logical_device": str(device),
             "name": torch.cuda.get_device_name(device),
             "total_memory_bytes": torch.cuda.get_device_properties(device).total_memory,
+            "exclusive": args.exclusive_gpu,
             "telemetry_before": telemetry_before,
             "telemetry_after": telemetry_after,
             "foreign_processes_before": before_measurement,
             "foreign_processes_after": after_measurement,
             "contamination_monitor": {
+                "enabled": monitor.enabled,
                 "poll_seconds": args.contamination_poll_seconds,
                 "foreign_processes_seen": monitor.foreign_processes,
                 "error": monitor.error,
             },
         },
-        "memory": {
-            "model_bytes": sum(tensor_bytes(parameter) for parameter in model.parameters()),
-            "gradient_bytes_nominal": sum(
-                tensor_bytes(parameter) for parameter in model.parameters()
-            ),
-            "optimizer_state_bytes": tensor_bytes(optimizer.state),
-            "optimizer_state_dtypes": optimizer_state_dtypes,
-            "optimizer_nonscalar_state_dtypes": optimizer_nonscalar_state_dtypes,
-            "peak_allocated_bytes": torch.cuda.max_memory_allocated(device),
-            "peak_reserved_bytes": torch.cuda.max_memory_reserved(device),
-        },
+        "memory": memory,
+        "resample_memory": resample_memory,
         "summary": summary,
+        "resample_summary": resample_summary,
         "samples": samples,
+        "resample_samples": resample_samples,
         "environment": {
             "python": platform.python_version(),
             "torch": torch.__version__,
@@ -466,16 +625,25 @@ def run(args) -> dict:
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variant", required=True, choices=("monarch_muon", "dense_adamw", "dense_muon"))
+    parser.add_argument("--variant", required=True, choices=[variant["name"] for variant in VARIANTS])
     parser.add_argument("--model-size", required=True, choices=("257m", "834m", "1p4b", "3p5b", "6p9b"))
-    parser.add_argument("--gpu-uuid", required=True)
+    parser.add_argument("--gpu-uuid", default=None, help="omit under --exclusive-gpu to read it from the driver")
+    parser.add_argument("--exclusive-gpu", action="store_true",
+                        help="the GPU is exclusively scheduled, so skip the nvidia-smi contamination checks")
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--sequence-length", type=int, default=256)
+    parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument("--microbatch", type=int, default=1)
-    parser.add_argument("--accumulation-steps", type=int, default=4)
+    parser.add_argument("--accumulation-steps", type=int, default=16)
     parser.add_argument("--warmup-steps", type=int, default=3)
     parser.add_argument("--measured-steps", type=int, default=12)
+    parser.add_argument("--resample-steps", type=int, default=3)
     parser.add_argument("--monarch-blocks", type=int, default=4)
+    parser.add_argument("--density", type=float, default=0.25)
+    parser.add_argument("--update-proj-gap", type=int, default=200)
+    parser.add_argument("--proj-side", type=str, default="std")
+    parser.add_argument("--proj-type", type=str, default="svd")
+    parser.add_argument("--apollo-proj", type=str, default="random")
+    parser.add_argument("--fira-alpha", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--momentum", type=float, default=0.95)
     parser.add_argument("--beta1", type=float, default=0.9)
@@ -494,8 +662,17 @@ def main():
         raise ValueError("--contamination-poll-seconds must be positive")
     if min(args.microbatch, args.sequence_length, args.accumulation_steps) <= 0:
         raise ValueError("microbatch, sequence length, and accumulation steps must be positive")
-    if args.warmup_steps < 1 or args.measured_steps < 1:
-        raise ValueError("warmup and measured steps must both be positive")
+    if args.warmup_steps < 1 or args.measured_steps < 1 or args.resample_steps < 1:
+        raise ValueError("warmup, measured and resample steps must all be positive")
+    if args.update_proj_gap <= args.warmup_steps + args.measured_steps:
+        raise ValueError(
+            "--update-proj-gap must exceed warmup + measured steps, otherwise a "
+            "projection rebuild lands inside the steady-state window"
+        )
+    if not 0.0 < args.density <= 1.0:
+        raise ValueError("--density must be in (0, 1]")
+    if args.gpu_uuid is None and not args.exclusive_gpu:
+        raise ValueError("--gpu-uuid is required unless --exclusive-gpu is set")
     started = time.time()
     try:
         payload = run(args)
@@ -524,6 +701,7 @@ def main():
             "model_size": args.model_size,
             "variant": args.variant,
             "gpu_uuid": args.gpu_uuid,
+            "requested_controls": requested_controls(args, args.microbatch, args.accumulation_steps),
             "wall_started_unix": started,
             "wall_finished_unix": time.time(),
         }
