@@ -25,6 +25,16 @@ if [ "${1:-}" = "peek" ]; then
     exit 0
 fi
 
+if [ "${1:-}" = "relocate" ]; then
+    # /home/jovyan reached its 500k inode quota, so a sweep has to be able to
+    # carry its recorded points to a volume that still has file slots.
+    destination=$2
+    mkdir -p "$destination"
+    cp -a "$RESULTS/results" "$destination/"
+    echo "points at $destination: $(ls -1 "$destination/results/runs" 2>/dev/null | wc -l)"
+    exit 0
+fi
+
 if [ "${1:-}" = "disk" ]; then
     # ENOSPC in the results directory has outlived a df that reported free
     # space, so report the file quota and probe every volume for a write.
