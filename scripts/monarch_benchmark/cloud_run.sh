@@ -3,14 +3,28 @@
 #
 #   mlsub run --repo <public mirror> --branch <branch> --image torch28 --no-pip \
 #     --entry scripts/monarch_benchmark/cloud_run.sh --gpus 1 \
-#     --args "--models 257m,834m --variants dense_adamw,galore,frugal,apollo,apollo_mini,fira"
+#     --args "--variants dense_adamw,galore,frugal,apollo,apollo_mini,fira"
 #
-# A failed mlsub job shows no logs at all, so everything is captured to the
-# persistent workspace disk and the tail is echoed before exiting zero.
+# First argument may instead be:
+#   selftest   run the unit tests (the cheap --gpus cpu rehearsal)
+#   peek       print the newest log and the results recorded so far
+#
+# A failed mlsub job shows no logs at all, so output is teed to the persistent
+# workspace disk and this script always exits zero.
 set -u
 
 RESULTS=${MEMBENCH_RESULTS:-/home/jovyan/mem-eff-bench}
 mkdir -p "$RESULTS/logs" "$RESULTS/results"
+
+if [ "${1:-}" = "peek" ]; then
+    echo "=== recorded points ==="
+    ls -1 "$RESULTS/results/runs" 2>/dev/null | sort || echo "none yet"
+    newest=$(ls -t "$RESULTS"/logs/*.log 2>/dev/null | head -1)
+    echo "=== tail of ${newest:-no log} ==="
+    [ -n "$newest" ] && tail -"${2:-120}" "$newest"
+    exit 0
+fi
+
 LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
 
 {
@@ -35,11 +49,9 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
             --skip-report \
             "$@"
     fi
-} >"$LOG" 2>&1
-status=$?
+} 2>&1 | tee "$LOG"
+status=${PIPESTATUS[0]}
 
 echo "EXIT=$status"
 echo "log: $LOG"
-echo "=== last 120 lines ==="
-tail -120 "$LOG"
 exit 0

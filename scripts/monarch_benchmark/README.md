@@ -108,4 +108,6 @@ ssh brain_lab mlsub run --repo <public mirror> --branch <branch> \
 ```
 
 Pass `selftest` as the first argument to run the unit tests instead of the
-sweep, which is the cheap `--gpus cpu` rehearsal.
+sweep, which is the cheap `--gpus cpu` rehearsal, or `peek` to print the
+newest log and the points recorded so far — useful mid-sweep, since `mlsub`
+gives no other way into the workspace disk.
