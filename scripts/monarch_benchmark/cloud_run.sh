@@ -8,6 +8,7 @@
 # First argument may instead be:
 #   selftest   run the unit tests (the cheap --gpus cpu rehearsal)
 #   peek       print the newest log and the results recorded so far
+#   export     print one compact line per recorded point, for mlsub logs
 #
 # A failed mlsub job shows no logs at all, so output is teed to the persistent
 # workspace disk and this script always exits zero.
@@ -22,6 +23,52 @@ if [ "${1:-}" = "peek" ]; then
     newest=$(ls -t "$RESULTS"/logs/*.log 2>/dev/null | head -1)
     echo "=== tail of ${newest:-no log} ==="
     [ -n "$newest" ] && tail -"${2:-120}" "$newest"
+    exit 0
+fi
+
+if [ "${1:-}" = "export" ]; then
+    # mlsub logs only keeps the tail, so every point leaves as one compact line
+    # rather than as its full JSON payload.
+    python3 - "$RESULTS/results/runs" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+COLUMNS = ("model", "variant", "microbatch", "status", "median_ms", "optimizer_ms",
+           "tokens_per_second", "peak_gb", "state_gb", "projector_gb", "params_gb",
+           "resample_ms", "resample_peak_gb")
+
+
+def cell(value, digits):
+    return "" if value is None else f"{value:.{digits}f}"
+
+
+print("PT\t" + "\t".join(COLUMNS))
+for path in sorted(Path(sys.argv[1]).glob("*.json")):
+    model, variant, batch = path.stem.split("-")
+    payload = json.loads(path.read_text())
+    status = payload.get("status")
+    row = [model, variant, batch.removeprefix("bs"), status]
+    if status == "complete":
+        summary = payload["summary"]
+        memory = payload["memory"]
+        resample = payload.get("resample_summary")
+        resample_memory = payload.get("resample_memory")
+        row += [
+            cell(summary["host_total_ms"]["median"], 3),
+            cell(summary["optimizer_ms"]["median"], 3),
+            cell(summary["tokens_per_second"]["median"], 1),
+            cell(memory["peak_allocated_bytes"] / 1e9, 3),
+            cell(memory["optimizer_state_bytes"] / 1e9, 3),
+            cell(memory["optimizer_projector_bytes"] / 1e9, 3),
+            cell(memory["model_bytes"] / 1e9, 3),
+            cell(resample["host_total_ms"]["median"] if resample else None, 3),
+            cell(resample_memory["peak_allocated_bytes"] / 1e9 if resample_memory else None, 3),
+        ]
+    else:
+        row += [""] * (len(COLUMNS) - len(row))
+    print("PT\t" + "\t".join(str(field) for field in row))
+PY
     exit 0
 fi
 
