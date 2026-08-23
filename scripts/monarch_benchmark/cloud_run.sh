@@ -43,6 +43,7 @@ def cell(value, digits):
     return "" if value is None else f"{value:.{digits}f}"
 
 
+gpus = {}
 print("PT\t" + "\t".join(COLUMNS))
 for path in sorted(Path(sys.argv[1]).glob("*.json")):
     model, variant, batch = path.stem.split("-")
@@ -65,9 +66,15 @@ for path in sorted(Path(sys.argv[1]).glob("*.json")):
             cell(resample["host_total_ms"]["median"] if resample else None, 3),
             cell(resample_memory["peak_allocated_bytes"] / 1e9 if resample_memory else None, 3),
         ]
+        gpu = payload["gpu"]
+        key = (gpu["name"], gpu["total_memory_bytes"])
+        gpus[key] = gpus.get(key, 0) + 1
     else:
         row += [""] * (len(COLUMNS) - len(row))
     print("PT\t" + "\t".join(str(field) for field in row))
+
+for (name, total_bytes), count in sorted(gpus.items()):
+    print(f"GPU\t{name}\t{total_bytes}\t{count}")
 PY
     exit 0
 fi
