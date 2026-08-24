@@ -30,6 +30,13 @@ if [ -z "$workspace" ]; then
 fi
 mkdir -p "$workspace/logs" "$workspace/results"
 
+# mlsub points PYTHONUSERBASE at /home/jovyan, which has used all 500 000 of
+# its inodes, so pip install --user there fails with ENOSPC while df -h still
+# reports free gigabytes.
+export PYTHONUSERBASE="$workspace/userbase"
+export PATH="$PYTHONUSERBASE/bin:$PATH"
+mkdir -p "$PYTHONUSERBASE"
+
 if [ "${1:-}" = "peek" ]; then
     echo "workspace: $workspace"
     echo "=== recorded runs ==="
