@@ -14,6 +14,7 @@ beta1=${BETA1:-0.9}
 beta2=${BETA2:-0.95}
 weight_decay=${WEIGHT_DECAY:-0.1}
 min_free_gib=${MIN_FREE_GIB:-65}
+torchrun=${TORCHRUN:-.venv/bin/torchrun}
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
@@ -24,16 +25,22 @@ if [[ -z "${gpu0:-}" || -z "${gpu1:-}" ]]; then
   exit 2
 fi
 
-for gpu in "$gpu0" "$gpu1"; do
-  free_mib=$(nvidia-smi --id="$gpu" --query-gpu=memory.free --format=csv,noheader,nounits)
-  if (( free_mib < min_free_gib * 1024 )); then
-    echo "GPU $gpu has ${free_mib} MiB free; require ${min_free_gib} GiB." >&2
-    exit 1
-  fi
-done
+# Cloud containers hand out whole GPUs and ship no nvidia-smi, so there is
+# nothing to admit against there.
+if command -v nvidia-smi >/dev/null 2>&1; then
+  for gpu in "$gpu0" "$gpu1"; do
+    free_mib=$(nvidia-smi --id="$gpu" --query-gpu=memory.free --format=csv,noheader,nounits)
+    if (( free_mib < min_free_gib * 1024 )); then
+      echo "GPU $gpu has ${free_mib} MiB free; require ${min_free_gib} GiB." >&2
+      exit 1
+    fi
+  done
+else
+  echo "nvidia-smi unavailable; skipping the ${min_free_gib} GiB admission check." >&2
+fi
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-outdir="results/monarch_tp2/llama7b_tp2_${stamp}"
+outdir="${RESULTS_ROOT:-results}/monarch_tp2/llama7b_tp2_${stamp}"
 mkdir -p "$outdir"
 
 printf '%s\n' \
@@ -61,7 +68,7 @@ for variant in dense_duplicated dense_distributed dense_blockwise monarch_muon; 
   fi
   echo "Starting $variant"
   CUDA_VISIBLE_DEVICES="$gpu_pair" CUDA_DEVICE_MAX_CONNECTIONS=1 \
-    .venv/bin/torchrun --standalone --nproc_per_node=2 \
+    "$torchrun" --standalone --nproc_per_node=2 \
     -m scripts.monarch_benchmark_tp2.benchmark_tp2 \
     --geometry llama7b --tokens "$sequence_length" --layers 32 \
     --variant "$variant" --batch-size 1 \
