@@ -18,10 +18,6 @@ def get_tokenizer(args, verbose=True):
         tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-    elif tokenizer_name == "qwen3":
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
     else:
         # Default tokenizer
         tokenizer = AutoTokenizer.from_pretrained("gpt2")

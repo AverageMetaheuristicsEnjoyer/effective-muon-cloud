@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 import copy
+import json
 import shutil
 from pathlib import Path
 import time
@@ -18,6 +19,10 @@ from dtype_utils.dtypes import (
 )
 
 from logger.logger import DynamicsLogger
+from .spectral_tracking import (
+    is_spectral_snapshot_step,
+    log_spectrum_and_stable_rank,
+)
 from optim.weight_averaging import (
     WeightAverager,
     eval_ema,
@@ -32,11 +37,6 @@ from .utils import (
     load_worker_state,
     save_checkpoint,
     save_worker_state,
-)
-from .stable_rank import (
-    append_stable_rank_jsonl,
-    collect_stable_rank,
-    flatten_stable_rank_metrics,
 )
 
 
@@ -182,6 +182,36 @@ def train(
     debug_dtypes=False
 ):
     not_compiled_model = model
+    progressive_controller = None
+    if getattr(cfg, "tucker_progressive_stages", None):
+        if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+            raise ValueError(
+                "Progressive Tucker rank growth changes parameter shapes and "
+                "therefore requires the single-process backend (omit "
+                "--distributed-backend and launch with python, not torchrun)."
+            )
+        if cfg.compile:
+            raise ValueError("Progressive Tucker rank growth is incompatible with --compile")
+        if cfg.opt != "tensorion":
+            raise ValueError("Progressive Tucker rank growth currently requires --opt tensorion")
+        if getattr(cfg, "linear_parameterization", None) != "tucker":
+            raise ValueError(
+                "--tucker-progressive-stages requires --linear-parameterization tucker"
+            )
+        from optim.progressive_tucker import ProgressiveTuckerController
+
+        raw_progressive_model = distributed_backend.get_raw_model(model)
+        progressive_controller = ProgressiveTuckerController(
+            raw_progressive_model,
+            opt,
+            cfg.tucker_progressive_stages,
+            warmup_steps=cfg.tucker_progressive_warmup_steps,
+            seed=cfg.tucker_progressive_seed,
+            verify_rtol=cfg.tucker_progressive_verify_rtol,
+        )
+        print("\nProgressive Tucker schedule:")
+        for line in progressive_controller.summary_lines():
+            print(f"  {line}")
     if cfg.compile:
         print(f"Compiling model ...")
         model = torch.compile(model)
@@ -230,6 +260,9 @@ def train(
             scheduler = build_scheduler(opt, cfg, total_steps=remaining_steps)
     else:
         curr_iter = 0
+
+    if progressive_controller is not None:
+        progressive_controller.resume_(curr_iter)
 
     if cfg.weight_average:
         # This does generally not support resuming training, but will work if
@@ -283,11 +316,26 @@ def train(
         "val_acc": [],
         "downstream": [],
         "aux_lm": [],
-        "stable_rank": [],
     }
+    best_val_loss = float("inf")
+    best_val_iter = None
+    best_val_ckpt_dir = None
+    best_val_metadata_path = None
+    save_best_val_checkpoint = getattr(cfg, "save_best_val_checkpoint", False)
+    if save_best_val_checkpoint and exp_dir is not None:
+        best_val_ckpt_dir = exp_dir / "ckpts" / "best_val"
+        best_val_metadata_path = best_val_ckpt_dir / "metrics.json"
+        if best_val_metadata_path.exists():
+            with best_val_metadata_path.open("r", encoding="utf-8") as handle:
+                best_val_metadata = json.load(handle)
+            best_val_loss = float(best_val_metadata["val_loss"])
+            best_val_iter = int(best_val_metadata["itr"])
+            print(
+                "Loaded best validation checkpoint metadata: "
+                f"val_loss={best_val_loss:.6f} at iter={best_val_iter}"
+            )
     inter_ckpt_steps = set(cfg.inter_ckpts)
     model.train()
-    last_stable_rank_iter = None
 
     # Initialize the progress bar
     if distributed_backend.is_master_process():
@@ -337,31 +385,37 @@ def train(
         _t_opt  = []
 
     while curr_iter <= cfg.iterations:
-        stable_rank_interval = getattr(cfg, "stable_rank_log_interval", 0)
-        if (
-            stable_rank_interval > 0
-            and distributed_backend.is_master_process()
-            and (curr_iter % stable_rank_interval == 0 or curr_iter == cfg.iterations)
-            and curr_iter != last_stable_rank_iter
-        ):
-            raw_for_rank = distributed_backend.get_raw_model(not_compiled_model)
-            stable_rank_groups = collect_stable_rank(raw_for_rank)
-            stable_rank_record = {"iter": curr_iter, "groups": stable_rank_groups}
-            stats["stable_rank"].append(stable_rank_record)
-            last_stable_rank_iter = curr_iter
-            if exp_dir is not None:
-                append_stable_rank_jsonl(exp_dir / "stable_rank.jsonl", stable_rank_record)
-            if stable_rank_groups:
-                all_rank = stable_rank_groups.get("all_projections")
-                if all_rank is not None:
-                    print(
-                        f"StableRank: Iter={curr_iter} "
-                        f"normalized_mean={all_rank['normalized_mean']:.4f} "
-                        f"normalized_std={all_rank['normalized_std']:.4f}"
+        if progressive_controller is not None:
+            # Release the previous iteration's autograd graph before any rank
+            # grows.  Its AccumulateGrad nodes pin the old factor shapes, so
+            # the next backward would validate the new gradients against them.
+            outputs = loss = None
+            growth = progressive_controller.maybe_grow(curr_iter)
+            if growth is not None:
+                # Parameter-based FLOP estimates are cached by the model.
+                flops_per_token = raw_model.num_fwd_flops + raw_model.num_bck_flops
+                print(
+                    "Progressive Tucker growth: "
+                    f"stage={growth['stage_index']} iter={curr_iter} "
+                    f"parameters={growth['parameters']:,} "
+                    f"target={growth['target_parameters']:,} "
+                    f"relative_function_error="
+                    f"{growth['max_relative_function_error']:.3e}"
+                )
+                if cfg.wandb and distributed_backend.is_master_process():
+                    wandb.log(
+                        {
+                            "iter": curr_iter,
+                            "tucker/progressive_stage": growth["stage_index"],
+                            "tucker/progressive_parameters": growth["parameters"],
+                            "tucker/progressive_target_parameters": growth[
+                                "target_parameters"
+                            ],
+                            "tucker/progressive_function_error": growth[
+                                "max_relative_function_error"
+                            ],
+                        }
                     )
-                if cfg.wandb:
-                    wandb.log(flatten_stable_rank_metrics(stable_rank_record))
-
         # Save permanent checkpoint
         if curr_iter > 0 and cfg.permanent_ckpt_interval > 0 and exp_dir is not None:
             if curr_iter % cfg.permanent_ckpt_interval == 0:
@@ -413,6 +467,54 @@ def train(
                 stats["val_pp"].append(val_pp)
                 stats["val_acc"].append(val_acc)
 
+                if (
+                    save_best_val_checkpoint
+                    and best_val_ckpt_dir is not None
+                    and val_loss < best_val_loss
+                ):
+                    previous_best = best_val_loss
+                    best_val_loss = float(val_loss)
+                    best_val_iter = curr_iter
+                    print(
+                        "Saving best validation checkpoint: "
+                        f"val_loss={best_val_loss:.6f} at iter={best_val_iter} "
+                        f"(previous={previous_best:.6f})"
+                    )
+                    save_checkpoint(
+                        model,
+                        opt,
+                        scheduler,
+                        curr_iter,
+                        best_val_ckpt_dir,
+                    )
+                    save_worker_state(
+                        best_val_ckpt_dir,
+                        train_reader=train_reader,
+                    )
+                    with best_val_metadata_path.open(
+                        "w", encoding="utf-8"
+                    ) as handle:
+                        json.dump(
+                            {
+                                "itr": best_val_iter,
+                                "val_loss": best_val_loss,
+                                "val_perplexity": float(val_pp),
+                                "val_accuracy": float(val_acc),
+                            },
+                            handle,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        handle.write("\n")
+                    if cfg.wandb:
+                        wandb.log(
+                            {
+                                "iter": curr_iter,
+                                "checkpoint/best_val_loss": best_val_loss,
+                                "checkpoint/best_val_iter": best_val_iter,
+                            }
+                        )
+
             if curr_iter > cfg.wa_interval and cfg.weight_average:
                 eval_wa(
                     curr_iter,
@@ -435,6 +537,31 @@ def train(
                     cfg,
                     full_eval=(curr_iter in cfg.full_eval_at),
                 )
+
+        stable_rank_due = is_spectral_snapshot_step(
+            curr_iter,
+            cfg.stable_rank_interval,
+        )
+        spectrum_interval = (
+            cfg.spectrum_interval
+            if cfg.spectrum_interval > 0
+            else cfg.stable_rank_interval
+        )
+        spectrum_due = (
+            cfg.stable_rank_log_spectrum
+            and is_spectral_snapshot_step(curr_iter, spectrum_interval)
+        )
+        if (
+            cfg.wandb
+            and distributed_backend.is_master_process()
+            and (stable_rank_due or spectrum_due)
+        ):
+            log_spectrum_and_stable_rank(
+                raw_model,
+                curr_iter,
+                log_stable_rank=stable_rank_due,
+                log_full_spectrum=spectrum_due,
+            )
 
         if downstream_evaluator is not None and downstream_evaluator.should_run(curr_iter):
             downstream_logs = None
@@ -576,6 +703,22 @@ def train(
             torch.cuda.synchronize()
             _tb4 = time.perf_counter_ns()
         opt.step()
+        tucker_retraction_diagnostics = None
+        if getattr(cfg, "tucker_retract_every_step", False):
+            from models.tucker_linear import retract_tucker_modules_
+
+            next_iter = curr_iter + 1
+            should_compute_diagnostics = bool(
+                cfg.log_interval and next_iter % cfg.log_interval == 0
+            )
+            tucker_retraction_diagnostics = retract_tucker_modules_(
+                distributed_backend.get_raw_model(not_compiled_model),
+                optimizer=opt,
+                transport_optimizer_state=getattr(
+                    cfg, "tucker_vector_transport", False
+                ),
+                compute_diagnostics=should_compute_diagnostics,
+            )
         if debug_dtypes and curr_iter == 1:
             print_gradient_dtypes(model, distributed_backend)
             print_optimizer_dtypes(opt, distributed_backend)
@@ -677,21 +820,64 @@ def train(
             )
 
             if cfg.wandb:
-                wandb.log(
-                    {
-                        "iter": curr_iter,
-                        "train/loss": train_loss,
-                        "train/perplexity": 2.71828**train_loss,
-                        "lr": current_lrs[0],
-                        "iter_dt": dt,
-                        "consumed_tokens": consumed_tokens,
-                        "throughput/total_training_gflops": flops_per_token * consumed_tokens / 1e9,
-                        "tok_gpu_sec": cfg.sequence_length * cfg.batch_size * cfg.acc_steps / dt,
-                        "grad_norm": grad_norm,
-                        "memory/peak_allocated_gb": peak_mem_gb,
-                        "memory/reserved_gb": reserved_mem_gb,
-                    }
+                logs = {
+                    "iter": curr_iter,
+                    "train/loss": train_loss,
+                    "train/perplexity": 2.71828**train_loss,
+                    "lr": current_lrs[0],
+                    "iter_dt": dt,
+                    "consumed_tokens": consumed_tokens,
+                    "throughput/total_training_gflops": flops_per_token * consumed_tokens / 1e9,
+                    "tok_gpu_sec": cfg.sequence_length * cfg.batch_size * cfg.acc_steps / dt,
+                    "grad_norm": grad_norm,
+                    "memory/peak_allocated_gb": peak_mem_gb,
+                    "memory/reserved_gb": reserved_mem_gb,
+                }
+                if tucker_retraction_diagnostics is not None:
+                    logs.update(
+                        {
+                            "tucker/retracted_modules": (
+                                tucker_retraction_diagnostics["modules"]
+                            ),
+                            "tucker/retracted_factors": (
+                                tucker_retraction_diagnostics["factors"]
+                            ),
+                            "tucker/transported_core_momenta": (
+                                tucker_retraction_diagnostics["transported_cores"]
+                            ),
+                            "tucker/transported_factor_momenta": (
+                                tucker_retraction_diagnostics["transported_factors"]
+                            ),
+                            "tucker/retraction_max_orthogonality_error": (
+                                tucker_retraction_diagnostics.get(
+                                    "max_orthogonality_error", 0.0
+                                )
+                            ),
+                            "tucker/retraction_mean_orthogonality_error": (
+                                tucker_retraction_diagnostics.get(
+                                    "mean_orthogonality_error", 0.0
+                                )
+                            ),
+                            "tucker/transport_max_momentum_tangency_error": (
+                                tucker_retraction_diagnostics.get(
+                                    "max_momentum_tangency_error", 0.0
+                                )
+                            ),
+                            "tucker/transport_mean_momentum_tangency_error": (
+                                tucker_retraction_diagnostics.get(
+                                    "mean_momentum_tangency_error", 0.0
+                                )
+                            ),
+                        }
+                    )
+                tucker_lr_scaling_metrics = getattr(
+                    opt,
+                    "last_tucker_lr_scaling_metrics",
+                    None,
                 )
+                if tucker_lr_scaling_metrics:
+                    logs.update(tucker_lr_scaling_metrics)
+                wandb.log(logs)
 
         if _prof is not None:
             _prof.step()

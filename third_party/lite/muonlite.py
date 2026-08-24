@@ -1,12 +1,11 @@
-import json
 import math
-import os
 import torch
+from torch._dynamo.exc import FailOnRecompileLimitHit
 from itertools import repeat
 from loguru import logger
 
 
-__all__ = ["MuonLite", "NuMuon"]
+__all__ = ["MuonLite"]
 
 
 # Newton-Schulz polynomial coefficients for matrix sign approximation
@@ -26,188 +25,62 @@ _coeffs_list = [
 ] + [_coeffs_list[-1]]
 
 
+def _newton_schulz_impl(G: torch.Tensor, steps: int) -> torch.Tensor:
+    assert G.ndim >= 2
+    X = G
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + 1e-8)
+
+    hs = _coeffs_list[:steps] + list(
+        repeat(_coeffs_list[-1], steps - len(_coeffs_list))
+    )
+    for a, b, c in hs:
+        A = X @ X.mT
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+    return X
+
+
 class OptimizedNewtonSchulz:
-    """Newton-Schulz iteration with per-shape torch.compile caching."""
+    """One dynamic compiled graph shared by every Tucker matrix shape.
+
+    Creating a separate ``torch.compile`` wrapper for every shape makes Dynamo
+    treat the many Tucker factor/core shapes as recompilations of one Python
+    code object and eventually raises ``FailOnRecompileLimitHit``. Dynamic
+    dimensions keep the same Newton-Schulz math while limiting specialization
+    to properties such as orientation, dtype, and device.
+    """
 
     def __init__(self):
-        self.shape_cache = {}
-
-    def _get_compiled_function(self, shape_key: tuple):
-        @torch.compile(dynamic=False, fullgraph=True, backend="inductor")
-        def compiled_func(G: torch.Tensor, steps: int) -> torch.Tensor:
-            assert G.ndim >= 2
-            X = G
-            if G.size(-2) > G.size(-1):
-                X = X.mT
-            X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + 1e-8)
-
-            hs = _coeffs_list[:steps] + list(repeat(_coeffs_list[-1], steps - len(_coeffs_list)))
-            for a, b, c in hs:
-                A = X @ X.mT
-                B = b * A + c * A @ A
-                X = a * X + B @ X
-
-            if G.size(-2) > G.size(-1):
-                X = X.mT
-            return X
-
-        return compiled_func
+        self.seen_shapes = set()
+        self.compiled_function = torch.compile(
+            _newton_schulz_impl,
+            dynamic=True,
+            fullgraph=True,
+            backend="inductor",
+        )
 
     def __call__(self, G: torch.Tensor, steps: int) -> torch.Tensor:
         shape_key = tuple(G.shape)
-        if shape_key not in self.shape_cache:
-            logger.info(f"Compiling Newton-Schulz for shape: {shape_key}")
-            self.shape_cache[shape_key] = self._get_compiled_function(shape_key)
-        return self.shape_cache[shape_key](G, steps)
+        if shape_key not in self.seen_shapes:
+            logger.info(f"Newton-Schulz dynamic shape: {shape_key}")
+            self.seen_shapes.add(shape_key)
+        try:
+            return self.compiled_function(G, steps)
+        except FailOnRecompileLimitHit:
+            logger.warning(
+                "Newton-Schulz reached the Dynamo recompile limit; "
+                "falling back to eager execution for all remaining steps."
+            )
+            self.compiled_function = _newton_schulz_impl
+            return self.compiled_function(G, steps)
 
 
 zeropower_via_newtonschulz5 = OptimizedNewtonSchulz()
-
-
-def _scheduled_rank_fraction(
-    step: int,
-    total_steps: int,
-    *,
-    start: float,
-    end: float,
-    warmup_fraction: float,
-    decay_end_fraction: float,
-    scheduler: str,
-) -> float:
-    """Rank fraction schedule used by NuMuon."""
-    start = float(start)
-    end = float(end)
-    if scheduler == "fixed":
-        return end
-
-    if scheduler != "cosine":
-        raise ValueError(f"Unknown NuMuon rank scheduler: {scheduler}")
-
-    total_steps = max(1, int(total_steps))
-    warmup_step = int(total_steps * warmup_fraction)
-    decay_end_step = max(warmup_step + 1, int(total_steps * decay_end_fraction))
-
-    if step < warmup_step:
-        return start
-    if step >= decay_end_step:
-        return end
-
-    progress = (step - warmup_step) / max(1, decay_end_step - warmup_step)
-    return end + (start - end) * 0.5 * (1.0 + math.cos(math.pi * progress))
-
-
-def _rank_from_fraction(m: int, n: int, fraction: float) -> int:
-    max_rank = min(m, n)
-    if max_rank <= 1:
-        return 1
-    return min(max_rank, max(1, int(math.ceil(float(fraction) * max_rank))))
-
-
-def _numuon_lmo_group_name(name: str) -> str:
-    name = name.lower()
-    if "gate_proj" in name:
-        return "ffn_gate"
-    if "up_proj" in name or "w12" in name:
-        return "ffn_up"
-    if "down_proj" in name or ("c_proj" in name and "mlp" in name):
-        return "ffn_down"
-    if "q_proj" in name:
-        return "attn_q"
-    if "k_proj" in name:
-        return "attn_k"
-    if "v_proj" in name:
-        return "attn_v"
-    if "o_proj" in name or ("c_proj" in name and "attn" in name):
-        return "attn_o"
-    return "other"
-
-
-@torch.no_grad()
-def _numuon_lmo_diagnostic(A: torch.Tensor, update: torch.Tensor, rank: int) -> dict:
-    A32 = A.float()
-    U32 = update.float()
-    s_A = torch.linalg.svdvals(A32)
-    s_U = torch.linalg.svdvals(U32)
-    exact_obj = s_A[:rank].sum()
-    approx_obj = (A32 * U32).sum()
-    exact_obj_f = exact_obj.item()
-    spectral_norm = s_U[0].item()
-    nuclear_norm = s_U.sum().item()
-    objective_ratio = approx_obj.item() / exact_obj_f if exact_obj_f != 0 else float("nan")
-    return {
-        "objective_ratio": objective_ratio,
-        "approx_objective": approx_obj.item(),
-        "exact_objective": exact_obj_f,
-        "spectral_norm": spectral_norm,
-        "spectral_violation": max(0.0, spectral_norm - 1.0),
-        "nuclear_norm": nuclear_norm,
-        "nuclear_budget": rank,
-        "nuclear_violation": max(0.0, nuclear_norm - float(rank)),
-        "fro_norm": U32.norm().item(),
-        "fro_target": math.sqrt(rank),
-        "effective_rank_1e_3": int((s_U > 1e-3).sum().item()),
-    }
-
-
-@torch.no_grad()
-def block_krylov_topk_polar(
-    A: torch.Tensor,
-    rank: int,
-    *,
-    oversample: int = 8,
-    krylov_iters: int = 2,
-    warm_start: torch.Tensor = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Approximate the rank-k polar factor U_k V_k^T with Block Krylov SVD.
-
-    This follows the paper's randomized Block Krylov top-k SVD recipe: build a
-    right Krylov subspace, compute a small SVD of A projected to that subspace,
-    then discard singular values and keep the top singular directions.
-    """
-    if A.ndim != 2:
-        raise ValueError(f"NuMuon expects a 2D matrix, got shape {tuple(A.shape)}")
-
-    m, n = A.shape
-    max_rank = min(m, n)
-    rank = min(max_rank, max(1, int(rank)))
-    block_size = min(max_rank, max(rank, rank + int(oversample)))
-    krylov_iters = max(1, int(krylov_iters))
-
-    A32 = A.float()
-    if (
-        warm_start is not None
-        and warm_start.ndim == 2
-        and warm_start.shape[0] == n
-        and warm_start.numel() > 0
-    ):
-        B0 = warm_start[:, : min(block_size, warm_start.shape[1])].float()
-        if B0.shape[1] < block_size:
-            pad = torch.randn(
-                n,
-                block_size - B0.shape[1],
-                device=A.device,
-                dtype=torch.float32,
-            )
-            B0 = torch.cat([B0, pad], dim=1)
-    else:
-        B0 = torch.randn(n, block_size, device=A.device, dtype=torch.float32)
-
-    B = torch.linalg.qr(B0, mode="reduced").Q
-    basis_blocks = []
-    for _ in range(krylov_iters):
-        T = A32 @ B
-        B = A32.mT @ T
-        B = torch.linalg.qr(B, mode="reduced").Q
-        basis_blocks.append(B)
-
-    K = torch.cat(basis_blocks, dim=1)
-    Q = torch.linalg.qr(K, mode="reduced").Q
-    T = A32 @ Q
-    U_t, _, Vh_t = torch.linalg.svd(T, full_matrices=False)
-    U_k = U_t[:, :rank]
-    V_k = Q @ Vh_t.mT[:, :rank]
-    update = U_k @ V_k.mT
-    return update.to(dtype=A.dtype), V_k.detach().to(dtype=A.dtype)
 
 
 @torch.no_grad()
@@ -340,20 +213,6 @@ class MuonLite(torch.optim.Optimizer):
         total_steps: int = 10000,
         warmup_steps: int = 1000,
         min_lr_ratio: float = 0.1,
-        numuon: bool = False,
-        numuon_fast: bool = True,
-        numuon_rank_start: float = 1.0,
-        numuon_rank_end: float = 0.25,
-        numuon_rank_scheduler: str = "cosine",
-        numuon_rank_warmup_fraction: float = 0.1,
-        numuon_rank_decay_end_fraction: float = 1.0,
-        numuon_krylov_iters: int = 2,
-        numuon_oversample: int = 8,
-        numuon_warm_start: bool = True,
-        numuon_lmo_log_interval: int = 0,
-        numuon_lmo_output_path: str = None,
-        numuon_lmo_max_per_group: int = 1,
-        numuon_lmo_groups: list[str] = None,
     ):
         defaults = dict(
             lr=lr,
@@ -382,23 +241,6 @@ class MuonLite(torch.optim.Optimizer):
         # T_f: fraction of post-warmup period for flat ramp-up (cosine schedule)
         self.T_f = 0.5
         self.iter = 0
-        self.numuon = bool(numuon)
-        self.numuon_fast = bool(numuon_fast)
-        self.numuon_rank_start = numuon_rank_start
-        self.numuon_rank_end = numuon_rank_end
-        self.numuon_rank_scheduler = numuon_rank_scheduler
-        self.numuon_rank_warmup_fraction = numuon_rank_warmup_fraction
-        self.numuon_rank_decay_end_fraction = numuon_rank_decay_end_fraction
-        self.numuon_krylov_iters = numuon_krylov_iters
-        self.numuon_oversample = numuon_oversample
-        self.numuon_warm_start = numuon_warm_start
-        self.numuon_lmo_log_interval = int(numuon_lmo_log_interval or 0)
-        self.numuon_lmo_output_path = numuon_lmo_output_path
-        self.numuon_lmo_max_per_group = max(1, int(numuon_lmo_max_per_group or 1))
-        self.numuon_lmo_groups = set(numuon_lmo_groups or ("ffn_gate", "ffn_down", "ffn_up"))
-        self.numuon_lmo_rank = int(os.environ.get("RANK", "0"))
-        self._numuon_lmo_counts = {}
-        self._numuon_lmo_iter = None
 
         # Build per-block dicts from simplified params (chi/chi_adamw/subspace_ratio),
         # then allow explicit per-block overrides via lr_ratio_dict/subspace_ratio_dict.
@@ -486,51 +328,6 @@ class MuonLite(torch.optim.Optimizer):
 
         return lr_ratio
 
-    def get_numuon_rank(self, m, n):
-        rank_fraction = _scheduled_rank_fraction(
-            self.iter,
-            self.total_steps,
-            start=self.numuon_rank_start,
-            end=self.numuon_rank_end,
-            warmup_fraction=self.numuon_rank_warmup_fraction,
-            decay_end_fraction=self.numuon_rank_decay_end_fraction,
-            scheduler=self.numuon_rank_scheduler,
-        )
-        return _rank_from_fraction(m, n, rank_fraction), rank_fraction
-
-    def _should_log_numuon_lmo(self, param_name):
-        if not self.numuon or self.numuon_lmo_log_interval <= 0:
-            return False, None, None
-        if self.numuon_lmo_rank != 0 or not self.numuon_lmo_output_path:
-            return False, None, None
-
-        step_index = self.iter + 1
-        if (
-            step_index != 1
-            and step_index != self.total_steps
-            and step_index % self.numuon_lmo_log_interval != 0
-        ):
-            return False, None, None
-
-        if self._numuon_lmo_iter != step_index:
-            self._numuon_lmo_iter = step_index
-            self._numuon_lmo_counts = {}
-
-        group = _numuon_lmo_group_name(param_name)
-        if group not in self.numuon_lmo_groups:
-            return False, None, None
-
-        count = self._numuon_lmo_counts.get(group, 0)
-        if count >= self.numuon_lmo_max_per_group:
-            return False, None, None
-        self._numuon_lmo_counts[group] = count + 1
-        return True, step_index, group
-
-    def _write_numuon_lmo_record(self, record):
-        os.makedirs(os.path.dirname(self.numuon_lmo_output_path), exist_ok=True)
-        with open(self.numuon_lmo_output_path, "a") as f:
-            f.write(json.dumps(record) + "\n")
-
     @torch.no_grad()
     def step(self, closure=None):
         loss = None
@@ -604,7 +401,7 @@ class MuonLite(torch.optim.Optimizer):
                 wd2 = (lr_times - 1) * wd
 
                 if state["step"] == 0:
-                    logger.debug(
+                    logger.info(
                         f"{state['name']}, muon+lite, beta1={group['beta1']}, beta2={group['beta2']}, "
                         f"subspace={state['subspace_ratio']}, lr_ratio={state['lr_ratio']}"
                     )
@@ -615,12 +412,8 @@ class MuonLite(torch.optim.Optimizer):
                 p.data.add_(update, alpha=-0.2 * lr * math.sqrt(max(m, n)))
 
             # ── Vanilla Muon params (2D, no LITE) ──
-            numuon_fast_active = self.numuon and self.numuon_fast
-            if numuon_fast_active:
-                from .numuon_fast import numuon_fast_step
-                numuon_fast_step(self, group, lr, wd, muon_theta)
             for p in group["params"]:
-                if numuon_fast_active or self.state[p]["use_muon"] != 2:
+                if self.state[p]["use_muon"] != 2:
                     continue
                 g = p.grad
                 if g is None:
@@ -636,58 +429,10 @@ class MuonLite(torch.optim.Optimizer):
 
                 state["momentum"] = state["momentum"] * muon_theta + g * (1 - muon_theta)
                 M = state["momentum"] + g * (1 - muon_theta) / muon_theta
+                u = zeropower_via_newtonschulz5(M, ns_steps)
 
                 if state["step"] == 0:
-                    if self.numuon:
-                        logger.debug(
-                            f"{state['name']}, numuon, scheduler={self.numuon_rank_scheduler}, "
-                            f"rank_start={self.numuon_rank_start}, rank_end={self.numuon_rank_end}, "
-                            f"krylov_iters={self.numuon_krylov_iters}, oversample={self.numuon_oversample}"
-                        )
-                    else:
-                        logger.debug(f"{state['name']}, vanilla_muon")
-
-                if self.numuon:
-                    rank, rank_fraction = self.get_numuon_rank(m, n)
-                    warm_start = state.get("numuon_basis") if self.numuon_warm_start else None
-                    u, basis = block_krylov_topk_polar(
-                        M,
-                        rank,
-                        oversample=self.numuon_oversample,
-                        krylov_iters=self.numuon_krylov_iters,
-                        warm_start=warm_start,
-                    )
-                    if self.numuon_warm_start:
-                        state["numuon_basis"] = basis
-                    state["numuon_rank"] = rank
-                    state["numuon_rank_fraction"] = rank_fraction
-                    should_log_lmo, lmo_step, lmo_group = self._should_log_numuon_lmo(state["name"])
-                    if should_log_lmo:
-                        record = {
-                            "iter": lmo_step,
-                            "param": state["name"],
-                            "group": lmo_group,
-                            "shape": [m, n],
-                            "rank": rank,
-                            "rank_fraction": rank_fraction,
-                            "krylov_iters": self.numuon_krylov_iters,
-                            "oversample": self.numuon_oversample,
-                            "warm_start": bool(warm_start is not None),
-                        }
-                        record.update(_numuon_lmo_diagnostic(M, u, rank))
-                        self._write_numuon_lmo_record(record)
-                        logger.info(
-                            "NuMuonLMO: iter={} group={} param={} ratio={:.4f} spec={:.6f} nuc={:.3f}/{}",
-                            lmo_step,
-                            lmo_group,
-                            state["name"],
-                            record["objective_ratio"],
-                            record["spectral_norm"],
-                            record["nuclear_norm"],
-                            rank,
-                        )
-                else:
-                    u = zeropower_via_newtonschulz5(M, ns_steps)
+                    logger.info(f"{state['name']}, vanilla_muon")
 
                 state["step"] += 1
                 p.data.mul_(1 - lr * wd)
@@ -714,7 +459,7 @@ class MuonLite(torch.optim.Optimizer):
                     state["lower_topk_ratio"] = 0.5
 
                 if state["step"] == 0:
-                    logger.debug(
+                    logger.info(
                         f"{state['name']}, adamw, subspace={state['subspace_ratio']}, "
                         f"lr_ratio={state['lr_ratio']}"
                     )
@@ -768,16 +513,3 @@ class MuonLite(torch.optim.Optimizer):
 
         self.iter += 1
         return loss
-
-
-class NuMuon(MuonLite):
-    """NuMuon wrapper using MuonLite's parameter handling with NuMuon updates."""
-
-    def __init__(self, *args, **kwargs):
-        kwargs["numuon"] = True
-        kwargs["beta1"] = 0.0
-        kwargs["beta2"] = 0.0
-        kwargs["chi"] = 1.0
-        kwargs["chi_adamw"] = 1.0
-        kwargs["subspace_ratio"] = 0.0
-        super().__init__(*args, **kwargs)

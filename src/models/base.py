@@ -14,6 +14,9 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from .tensorized_attention import tensorized_attention_from_config
+from .tucker_linear import TuckerLinear
+
 
 class LayerNorm(nn.Module):
     """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
@@ -99,13 +102,17 @@ class MLP(nn.Module):
         super().__init__()
         self.dim_exp_factor = exp_factor * 4
 
+        hidden_size = getattr(config, "ffn_hidden_size", 0)
+        if hidden_size <= 0:
+            hidden_size = int(self.dim_exp_factor * config.n_embd)
+
         self.c_fc = nn.Linear(
             config.n_embd,
-            int(self.dim_exp_factor * config.n_embd),
+            hidden_size,
             bias=config.bias,
         )
         self.c_proj = nn.Linear(
-            int(self.dim_exp_factor * config.n_embd),
+            hidden_size,
             config.n_embd,
             bias=config.bias,
         )
@@ -124,7 +131,11 @@ class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        self.attn = (
+            tensorized_attention_from_config(config)
+            if getattr(config, "attention_type", "standard") == "tensorized"
+            else CausalSelfAttention(config)
+        )
         self.parallel = config.parallel_block
         if not self.parallel:
             self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
@@ -135,7 +146,7 @@ class Block(nn.Module):
             # from GPT-J 6B https://github.com/kingoflolz/mesh-transformer-jax/blob/f8315e3003033b23f21d78361b288953064e0e76/mesh_transformer/layers.py#L299
             x_ln = self.ln_1(x, *args, **kwargs)
             x_attn = self.attn(x_ln)
-            x_ffn = self.mlp(x_ln)
+            x_ffn, _ = self.mlp(x_ln)
             x = x + x_attn + x_ffn
         else:
             x = x + self.attn(self.ln_1(x, *args, **kwargs))
@@ -171,7 +182,7 @@ class GPTBase(nn.Module):
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight"):
+            if pn.endswith("c_proj.weight") or pn.endswith("o_proj.weight"):
                 torch.nn.init.normal_(
                     p,
                     mean=0.0,
@@ -204,22 +215,60 @@ class GPTBase(nn.Module):
                 p.numel() for name, p in self.named_parameters()
                 if 'wte' not in name and 'wpe' not in name
             )
-            # 2 FLOPs per MAC, plus 2*2 for Q*K^T and out*V per attention layer
-            self._num_fwd_flops = (
+            # 2 FLOPs per MAC. Linear projections are already covered by the
+            # parameter term; account separately for the attention contractions.
+            if getattr(self.config, "attention_type", "standard") == "tensorized":
+                rank = self.config.tensorized_rank
+                if self.config.tensorized_mode == "split_concat":
+                    attention_flops = 2 * rank * self.config.sequence_length ** 2
+                else:
+                    attention_flops = 2 * rank * self.config.sequence_length
+            else:
+                # 2*2 for Q*K^T and out*V per standard attention layer.
+                attention_flops = 4 * self.config.n_embd * self.config.sequence_length
+            estimate = (
                 2 * n_params_no_emb
-                + self.config.n_layer * 4 * self.config.n_embd * self.config.sequence_length
+                + self.config.n_layer * attention_flops
             )
+            # ``2 * parameter_count`` assumes one dense MAC per weight. Tucker
+            # factors are reused across mode contractions, so replace that term
+            # with the module's actual contraction count.
+            for module in self.modules():
+                if isinstance(module, TuckerLinear):
+                    estimate += (
+                        module.forward_flops_per_token
+                        - 2 * module.weight_parameter_count
+                    )
+            self._num_fwd_flops = estimate
         return self._num_fwd_flops
 
     @property
     def num_bck_flops(self):
         if not hasattr(self, '_num_bck_flops'):
-            n_params = sum(p.numel() for p in self.parameters())
-            # Backward is ~2x forward for weights + ~2x for input grads = 4x params
-            self._num_bck_flops = (
-                4 * n_params
-                + self.config.n_layer * 8 * self.config.n_embd * self.config.sequence_length
+            n_params_no_emb = sum(
+                p.numel() for name, p in self.named_parameters()
+                if 'wte' not in name and 'wpe' not in name
             )
+            if getattr(self.config, "attention_type", "standard") == "tensorized":
+                rank = self.config.tensorized_rank
+                if self.config.tensorized_mode == "split_concat":
+                    attention_flops = 4 * rank * self.config.sequence_length ** 2
+                else:
+                    attention_flops = 4 * rank * self.config.sequence_length
+            else:
+                attention_flops = 8 * self.config.n_embd * self.config.sequence_length
+            # Backward is ~2x forward for weights + ~2x for input grads = 4x params
+            estimate = (
+                4 * n_params_no_emb
+                + self.config.n_layer * attention_flops
+            )
+            for module in self.modules():
+                if isinstance(module, TuckerLinear):
+                    estimate += (
+                        2 * module.forward_flops_per_token
+                        - 4 * module.weight_parameter_count
+                    )
+            self._num_bck_flops = estimate
         return self._num_bck_flops
 
     def _init_weights(self, module):
@@ -247,14 +296,17 @@ class GPTBase(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
 
         for block in self.transformer.h:
-            x, logits_and_experts = block(x)
+            x = block(x)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1,
+                label_smoothing=getattr(self.config, "label_smoothing", 0.0),
             )
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
@@ -276,7 +328,10 @@ class GPTBase(nn.Module):
             self.transformer.wpe.weight[:sequence_length]
         )
         for block in self.transformer.h:
-            block.attn.bias = block.attn.bias[:, :, :sequence_length, :sequence_length]
+            if hasattr(block.attn, "bias"):
+                block.attn.bias = block.attn.bias[
+                    :, :, :sequence_length, :sequence_length
+                ]
 
     def from_pretrained(self, model_path):
         paths = model_path.split(",")
@@ -297,6 +352,7 @@ class GPTBase(nn.Module):
         Linear weights are decayed; biases, norms, and embeddings are not.
         """
         decay = set()
+        decay_non_projection = set()
         no_decay = set()
         whitelist_weight_modules = (torch.nn.Linear,)
         from .utils import BLACKLIST_WEIGHT_MODULES
@@ -306,23 +362,40 @@ class GPTBase(nn.Module):
                 fpn = "%s.%s" % (mn, pn) if mn else pn
                 if pn.endswith("bias"):
                     no_decay.add(fpn)
+                elif pn == "core_logits":
+                    # Diagonal BTD core coefficients behave like attention
+                    # logits, not a dense projection matrix.
+                    no_decay.add(fpn)
+                elif isinstance(m, TuckerLinear):
+                    # Tucker factors/core/residual replace a decayed Linear
+                    # weight. The Llama lm_head follows the repo's existing
+                    # no-decay treatment of the output projection.
+                    if fpn.startswith("lm_head."):
+                        no_decay.add(fpn)
+                    elif pn == "residual_tail":
+                        # This is a decayed projection-weight remainder, but it
+                        # is 1-D and must not be handed to matrix optimizers.
+                        decay_non_projection.add(fpn)
+                    else:
+                        decay.add(fpn)
                 elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
                     decay.add(fpn)
                 elif pn.endswith("weight") and isinstance(m, BLACKLIST_WEIGHT_MODULES):
                     no_decay.add(fpn)
 
-        # lm_head.weight is tied to wte.weight; exclude from decay
+        # GPTBase ties lm_head.weight to wte.weight; Llama historically follows
+        # the same no-decay grouping for its independent output head.
         decay.discard("lm_head.weight")
-        no_decay.add("lm_head.weight")
+        if "lm_head.weight" in dict(self.named_parameters()):
+            no_decay.add("lm_head.weight")
 
         param_dict = {pn: p for pn, p in self.named_parameters()}
-        # Tied weights may appear while walking modules but be omitted from
-        # named_parameters(); keep only optimizer-addressable parameter names.
-        actual_params = set(param_dict)
-        decay &= actual_params
-        no_decay &= actual_params
-        inter_params = decay & no_decay
-        union_params = decay | no_decay
+        inter_params = (
+            (decay & no_decay)
+            | (decay & decay_non_projection)
+            | (decay_non_projection & no_decay)
+        )
+        union_params = decay | decay_non_projection | no_decay
         assert len(inter_params) == 0, (
             "parameters %s made it into both decay/no_decay sets!" % (str(inter_params),)
         )
@@ -331,10 +404,24 @@ class GPTBase(nn.Module):
             % (str(param_dict.keys() - union_params),)
         )
 
-        return [
+        groups = [
             {"params": sorted(list(decay)), "is_proj_params": True},
-            {"params": sorted(list(no_decay)), "weight_decay": 0.0, "is_proj_params": False},
         ]
+        if decay_non_projection:
+            groups.append(
+                {
+                    "params": sorted(list(decay_non_projection)),
+                    "is_proj_params": False,
+                }
+            )
+        groups.append(
+            {
+                "params": sorted(list(no_decay)),
+                "weight_decay": 0.0,
+                "is_proj_params": False,
+            }
+        )
+        return groups
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
@@ -366,7 +453,7 @@ class GPTBase(nn.Module):
                 self.tokenizer.encode(in_str, allowed_special={"<|endoftext|>"})
             )
             .view(1, -1)
-            .to(self.lm_head.weight.device)
+            .to(next(self.lm_head.parameters()).device)
         )
         out_idx = (
             self.generate(idx, max_new_tokens, temperature, top_k)

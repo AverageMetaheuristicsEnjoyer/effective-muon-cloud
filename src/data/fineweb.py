@@ -8,9 +8,11 @@ import torch.distributed as dist
 
 from .fineweb_streaming_core import (
     FineWebEduStream,
+    HfParquetSource,
+    LocalParquetSource,
     Manifest,
     SplitPlan,
-    build_manifest,
+    build_manifest_from_source,
     build_snapshot_split_plan_with_val_blocks,
 )
 
@@ -18,20 +20,125 @@ from .fineweb_streaming_core import (
 DEFAULT_FINEWEB_SPLIT_SEED = 2357
 DEFAULT_DOC_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
+DEFAULT_FINEWEB_SOURCE = "auto"
+DEFAULT_FINEWEB_HF_REPO_ID = "HuggingFaceFW/fineweb-edu"
+DEFAULT_FINEWEB_HF_DATA_PREFIX = "sample/100BT"
+DEFAULT_FINEWEB_HF_REVISION = "main"
+
+
+def _direct_child_parquet_paths(dataset_root: Path) -> list[Path]:
+    return sorted(path for path in dataset_root.glob("*.parquet") if path.is_file())
+
+
+def _find_nested_parquet_dirs(dataset_root: Path) -> list[Path]:
+    parquet_dirs = {path.parent for path in dataset_root.rglob("*.parquet") if path.is_file()}
+    return sorted(parquet_dirs)
 
 
 def _resolve_dataset_root(datasets_dir: str) -> Path:
     dataset_root = Path(datasets_dir).expanduser()
     if not dataset_root.is_dir():
         raise FileNotFoundError(
-            "FineWeb requires --datasets-dir to point directly at a local parquet shard directory."
+            f"FineWeb dataset path does not exist or is not a directory: {dataset_root}"
         )
-    parquet_paths = sorted(path for path in dataset_root.glob("*.parquet") if path.is_file())
-    if not parquet_paths:
-        raise FileNotFoundError(
-            f"No direct-child parquet shards found under {dataset_root}."
+    if _direct_child_parquet_paths(dataset_root):
+        return dataset_root
+
+    parquet_dirs = _find_nested_parquet_dirs(dataset_root)
+    if len(parquet_dirs) == 1:
+        resolved_root = parquet_dirs[0]
+        print(
+            "FineWeb resolved --datasets-dir to nested parquet shard directory: "
+            f"{resolved_root}"
         )
-    return dataset_root
+        return resolved_root
+
+    if parquet_dirs:
+        candidates = "\n".join(f"  - {path}" for path in parquet_dirs[:10])
+        if len(parquet_dirs) > 10:
+            candidates += f"\n  ... and {len(parquet_dirs) - 10} more"
+        raise ValueError(
+            "FineWeb found multiple nested parquet shard directories under "
+            f"{dataset_root}. Set FINEWEB_DIR or --datasets-dir to the exact one:\n"
+            f"{candidates}"
+        )
+
+    raise FileNotFoundError(
+        "FineWeb requires --datasets-dir to point at a local parquet shard "
+        f"directory, or a parent containing exactly one such directory. No parquet "
+        f"shards found under {dataset_root}."
+    )
+
+
+def _load_resume_train_reader_state(args, rank: int) -> dict[str, Any] | None:
+    resume_from = getattr(args, "resume_from", None)
+    if resume_from is None:
+        return None
+    worker_path = Path(resume_from) / f"worker_{rank}.pt"
+    if not worker_path.exists():
+        return None
+    worker_state = torch.load(worker_path, map_location="cpu", weights_only=False)
+    train_reader_state = worker_state.get("train_reader_state")
+    return train_reader_state if isinstance(train_reader_state, dict) else None
+
+
+def _source_choice(args) -> str:
+    return str(getattr(args, "fineweb_source", DEFAULT_FINEWEB_SOURCE))
+
+
+def _make_hf_source(args, source_metadata: dict[str, Any] | None = None):
+    if source_metadata is not None:
+        return HfParquetSource.from_metadata(source_metadata)
+    return HfParquetSource(
+        repo_id=str(
+            getattr(args, "fineweb_hf_repo_id", DEFAULT_FINEWEB_HF_REPO_ID)
+        ),
+        data_prefix=str(
+            getattr(args, "fineweb_hf_data_prefix", DEFAULT_FINEWEB_HF_DATA_PREFIX)
+        ),
+        revision=str(
+            getattr(args, "fineweb_hf_revision", DEFAULT_FINEWEB_HF_REVISION)
+        ),
+    )
+
+
+def _resolve_parquet_source(args, *, rank: int):
+    choice = _source_choice(args)
+    if choice not in {"auto", "local", "hf"}:
+        raise ValueError("--fineweb-source must be one of: auto, local, hf.")
+
+    resume_state = _load_resume_train_reader_state(args, rank)
+    resume_source_metadata = (
+        resume_state.get("source_metadata")
+        if isinstance(resume_state, dict)
+        else None
+    )
+    if isinstance(resume_source_metadata, dict):
+        resume_kind = str(resume_source_metadata.get("kind", ""))
+        if resume_kind == "hf":
+            if choice == "local":
+                raise ValueError(
+                    "Cannot resume an HF FineWeb checkpoint with "
+                    "--fineweb-source local."
+                )
+            return _make_hf_source(args, resume_source_metadata)
+
+    if choice in {"auto", "local"}:
+        try:
+            return LocalParquetSource(_resolve_dataset_root(args.datasets_dir))
+        except (FileNotFoundError, ValueError):
+            if choice == "local" or not getattr(args, "streaming", False):
+                raise
+
+    if choice in {"auto", "hf"}:
+        if not getattr(args, "streaming", False):
+            raise FileNotFoundError(
+                "FineWeb HF source requires --streaming when local parquet shards "
+                "are unavailable."
+            )
+        return _make_hf_source(args)
+
+    raise RuntimeError("Unreachable FineWeb source selection state.")
 
 
 class FineWebValReader:
@@ -77,6 +184,7 @@ class FineWebTrainReader:
         split_plan: SplitPlan,
         tokenizer_factory: Callable[[], Any],
         *,
+        parquet_source,
         tokenizer_name: str,
         batch_size: int,
         sequence_length: int,
@@ -89,6 +197,8 @@ class FineWebTrainReader:
         self.manifest = manifest
         self.split_plan = split_plan
         self.tokenizer_factory = tokenizer_factory
+        self.parquet_source = parquet_source
+        self.source_metadata = parquet_source.to_dict()
         self.tokenizer_name = tokenizer_name
         self.batch_size = batch_size
         self.sequence_length = sequence_length
@@ -116,6 +226,7 @@ class FineWebTrainReader:
             num_token_workers=self.num_token_workers,
             doc_batch_size=self.doc_batch_size,
             prefetch_batches=self.prefetch_batches,
+            parquet_source=self.parquet_source,
         )
 
     def _replace_stream(self, stream_state: dict[str, Any] | None = None):
@@ -162,6 +273,8 @@ class FineWebTrainReader:
     def state_dict(self) -> dict[str, Any]:
         return {
             "reader_type": "fineweb_train_reader_v1",
+            "manifest_fingerprint": self.manifest.fingerprint,
+            "source_metadata": self.source_metadata,
             "tokenizer_name": self.tokenizer_name,
             "batch_size": self.batch_size,
             "sequence_length": self.sequence_length,
@@ -172,6 +285,31 @@ class FineWebTrainReader:
     def load_state_dict(self, state: dict[str, Any]):
         if state.get("reader_type") != "fineweb_train_reader_v1":
             raise RuntimeError("Unsupported FineWeb train reader checkpoint format.")
+        if (
+            "manifest_fingerprint" in state
+            and str(state["manifest_fingerprint"]) != self.manifest.fingerprint
+        ):
+            raise ValueError("Checkpoint manifest does not match this FineWeb reader.")
+        state_source_metadata = state.get("source_metadata")
+        if isinstance(state_source_metadata, dict):
+            state_kind = str(state_source_metadata.get("kind", ""))
+            current_kind = str(self.source_metadata.get("kind", ""))
+            if state_kind != current_kind:
+                raise ValueError("Checkpoint FineWeb source kind does not match.")
+            if state_kind == "hf":
+                for key in ("repo_id", "data_prefix", "resolved_revision"):
+                    if str(state_source_metadata.get(key)) != str(
+                        self.source_metadata.get(key)
+                    ):
+                        raise ValueError(
+                            "Checkpoint Hugging Face FineWeb source does not "
+                            f"match current source field {key!r}."
+                        )
+        elif self.source_metadata.get("kind") == "hf":
+            raise ValueError(
+                "Checkpoint is missing Hugging Face FineWeb source metadata. "
+                "Old HF datasets-streaming checkpoints cannot be resumed exactly."
+            )
         if str(state["tokenizer_name"]) != self.tokenizer_name:
             raise ValueError("Checkpoint tokenizer does not match this FineWeb reader.")
         if int(state["batch_size"]) != self.batch_size:
@@ -238,13 +376,13 @@ def build_fineweb_readers(
     tokenizer_factory: Callable[[], Any],
     verbose: bool = True,
 ):
-    dataset_root = _resolve_dataset_root(args.datasets_dir)
-    manifest = build_manifest(dataset_root)
     block_tokens = args.sequence_length + 1
     val_sequences = args.eval_batches * args.eval_batch_size
 
     world_size = dist.get_world_size() if dist.is_initialized() else 1
     rank = dist.get_rank() if dist.is_initialized() else 0
+    parquet_source = _resolve_parquet_source(args, rank=rank)
+    manifest = build_manifest_from_source(parquet_source)
     tokenizer_name = str(
         getattr(tokenizer, "name_or_path", None) or getattr(args, "tokenizer", "tokenizer")
     )
@@ -258,6 +396,7 @@ def build_fineweb_readers(
             val_sequences=val_sequences,
             split_seed=DEFAULT_FINEWEB_SPLIT_SEED,
             shuffle_seed=args.data_seed,
+            parquet_source=parquet_source,
         )
         split_plan = plan_with_val.plan
         val_blocks = (
@@ -274,6 +413,7 @@ def build_fineweb_readers(
         manifest,
         split_plan,
         tokenizer_factory,
+        parquet_source=parquet_source,
         tokenizer_name=tokenizer_name,
         batch_size=args.batch_size,
         sequence_length=args.sequence_length,
@@ -297,7 +437,7 @@ def build_fineweb_readers(
     )
 
     if verbose and rank == 0:
-        print(f"Using FineWeb parquet dataset at {dataset_root}")
+        print(f"Using FineWeb parquet source: {parquet_source.source_id}")
         print(
             f"FineWeb manifest: {len(manifest.shards)} shards, "
             f"{manifest.total_row_groups} row groups"

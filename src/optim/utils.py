@@ -144,6 +144,24 @@ def cos_warmup_zero_schedule(n_iterations, n_warmup):
     return schedule
 
 
+def inverse_sqrt_schedule(n_warmup):
+    """Transformer warmup followed by inverse-square-root decay.
+
+    The multiplier is normalised to reach 1.0 at ``n_warmup`` so ``--lr``
+    remains the peak learning rate used by the rest of this training code.
+    """
+    if n_warmup <= 0:
+        raise ValueError("inverse_sqrt requires --warmup-steps > 0")
+
+    def schedule(step):
+        step = step + 1
+        if step <= n_warmup:
+            return step / n_warmup
+        return math.sqrt(n_warmup / step)
+
+    return schedule
+
+
 def build_scheduler(opt, args, total_steps=None):
     total_steps = args.iterations if total_steps is None else total_steps
 
@@ -183,6 +201,12 @@ def build_scheduler(opt, args, total_steps=None):
             n_warmup=args.warmup_steps,
         )
         return torch.optim.lr_scheduler.LambdaLR(opt, lambda_schedule)
+
+    if args.scheduler == "inverse_sqrt":
+        return torch.optim.lr_scheduler.LambdaLR(
+            opt,
+            inverse_sqrt_schedule(args.warmup_steps),
+        )
 
     if args.scheduler == "cos_inf":
         assert args.warmup_steps < total_steps, "Warmup steps must be < total scheduler steps."
@@ -325,6 +349,116 @@ def eval_sweep_alphath(
     return x_axis, y_axis_acc, y_axis_pp, y_axis_loss
 
 
+_ARCHITECTURE_CONFIG_KEYS = (
+    "model",
+    "vocab_size",
+    "sequence_length",
+    "n_embd",
+    "n_head",
+    "n_layer",
+    "multiple_of",
+    "ffn_hidden_size",
+    "attention_type",
+    "tensorized_mode",
+    "tensorized_rank",
+    "tensorized_num_cores",
+    "tensorized_causal",
+    "linear_parameterization",
+    "target_parameter_count",
+    "target_parameter_tolerance",
+    "tucker_rank",
+    "tucker_ranks",
+    "tucker_terms",
+    "tucker_attention_ranks",
+    "tucker_gate_up_ranks",
+    "tucker_down_ranks",
+    "tucker_rank_plan",
+    "tucker_progressive_stages",
+    "tucker_progressive_warmup_steps",
+    "tucker_progressive_seed",
+    "tucker_progressive_verify_rtol",
+    "tucker_equal_params",
+    "tucker_forward_mode",
+    "tucker_retract_every_step",
+    "tucker_vector_transport",
+    "tucker_riemannian_muon",
+    "tucker_riemannian_muon_post_ns_project",
+    "tucker_dense_adamw_matrices",
+    "tucker_lr_scaling_mode",
+    "tucker_lr_scaling_eps",
+    "tucker_lr_scaling_power_iters",
+    "tucker_lr_scaling_use_stiefel_unit_norm",
+    "tucker_lr_scaling_post_ns_project",
+    "tucker_lr_scaling_stiefel_drift_threshold",
+    "tucker_lr_scaling_strict_bound_check",
+    "tucker_lr_scaling_exact_svd_debug",
+    "tucker_lr_scaling_log_interval",
+)
+
+
+def _architecture_metadata(model):
+    config = getattr(model, "config", None)
+    if config is None:
+        return None
+    metadata = {
+        key: getattr(config, key, None) for key in _ARCHITECTURE_CONFIG_KEYS
+    }
+    if metadata.get("attention_type") != "tensorized":
+        for key in (
+            "tensorized_mode",
+            "tensorized_rank",
+            "tensorized_num_cores",
+            "tensorized_causal",
+        ):
+            metadata[key] = None
+    if metadata.get("linear_parameterization") != "tucker":
+        for key in (
+            "target_parameter_count",
+            "target_parameter_tolerance",
+            "tucker_rank",
+            "tucker_ranks",
+            "tucker_terms",
+            "tucker_attention_ranks",
+            "tucker_gate_up_ranks",
+            "tucker_down_ranks",
+            "tucker_rank_plan",
+            "tucker_progressive_stages",
+            "tucker_progressive_warmup_steps",
+            "tucker_progressive_seed",
+            "tucker_progressive_verify_rtol",
+            "tucker_equal_params",
+            "tucker_forward_mode",
+            "tucker_retract_every_step",
+            "tucker_vector_transport",
+            "tucker_riemannian_muon",
+            "tucker_riemannian_muon_post_ns_project",
+            "tucker_dense_adamw_matrices",
+            "tucker_lr_scaling_mode",
+            "tucker_lr_scaling_eps",
+            "tucker_lr_scaling_power_iters",
+            "tucker_lr_scaling_use_stiefel_unit_norm",
+            "tucker_lr_scaling_post_ns_project",
+            "tucker_lr_scaling_stiefel_drift_threshold",
+            "tucker_lr_scaling_strict_bound_check",
+            "tucker_lr_scaling_exact_svd_debug",
+            "tucker_lr_scaling_log_interval",
+        ):
+            metadata[key] = None
+    # Empty per-mode rank strings and omitted values are the same policy.
+    for key in (
+        "tucker_ranks",
+        "tucker_attention_ranks",
+        "tucker_gate_up_ranks",
+        "tucker_down_ranks",
+    ):
+        if not metadata.get(key):
+            metadata[key] = None
+    tucker_stats = getattr(model, "_tucker_replacement_stats", None)
+    if tucker_stats is not None:
+        metadata["resolved_tucker_plans"] = tucker_stats.plans
+    return metadata
+
+
 def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path):
     if isinstance(model, torch.nn.parallel.DistributedDataParallel):
         model = model.module
@@ -334,6 +468,8 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path):
         "optimizer": opt.state_dict(),
         "scheduler": scheduler.state_dict() if scheduler is not None else None,
         "itr": itr,
+        "architecture": _architecture_metadata(model),
+        "progressive_tucker": getattr(model, "_progressive_tucker_state", None),
     }
     ckpt_dir.mkdir(exist_ok=True, parents=True)
     torch.save(checkpoint, ckpt_dir / "main.pt")
@@ -353,6 +489,91 @@ def load_checkpoint(
         model = model.module
 
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    progressive_state = ckpt.get("progressive_tucker")
+    if progressive_state is not None:
+        from optim.progressive_tucker import restore_progressive_tucker_shapes_
+
+        restore_progressive_tucker_shapes_(model, opt, progressive_state)
+    saved_architecture = ckpt.get("architecture")
+    current_architecture = _architecture_metadata(model)
+    if saved_architecture is not None and current_architecture is not None:
+        mismatches = []
+        scaler_keys = {
+            "tucker_lr_scaling_mode",
+            "tucker_lr_scaling_eps",
+            "tucker_lr_scaling_power_iters",
+            "tucker_lr_scaling_use_stiefel_unit_norm",
+            "tucker_lr_scaling_post_ns_project",
+            "tucker_lr_scaling_stiefel_drift_threshold",
+            "tucker_lr_scaling_strict_bound_check",
+            "tucker_lr_scaling_exact_svd_debug",
+            "tucker_lr_scaling_log_interval",
+        }
+        saved_scaler_mode = saved_architecture.get(
+            "tucker_lr_scaling_mode",
+            "none",
+        )
+        current_scaler_mode = current_architecture.get(
+            "tucker_lr_scaling_mode",
+            "none",
+        )
+        for key in _ARCHITECTURE_CONFIG_KEYS:
+            saved_value = saved_architecture.get(key)
+            current_value = current_architecture.get(key)
+            if key == "tucker_riemannian_muon" and key not in saved_architecture:
+                # Checkpoints written before this opt-in mode existed are
+                # equivalent to an explicit false value.
+                saved_value = False
+            if key == "tucker_lr_scaling_mode" and key not in saved_architecture:
+                saved_value = "none"
+            if key == "tucker_terms" and key not in saved_architecture:
+                saved_value = 1
+            if (
+                key == "tucker_riemannian_muon_post_ns_project"
+                and key not in saved_architecture
+            ):
+                saved_value = False
+            if (
+                key == "tucker_lr_scaling_post_ns_project"
+                and key not in saved_architecture
+            ):
+                saved_value = True
+            if (
+                key in scaler_keys
+                and saved_scaler_mode == "none"
+                and current_scaler_mode == "none"
+            ):
+                continue
+            pure_rank_only = (
+                saved_architecture.get("tucker_equal_params") is False
+                and current_architecture.get("tucker_equal_params") is False
+            )
+            if pure_rank_only and key in (
+                "target_parameter_count",
+                "target_parameter_tolerance",
+            ):
+                # These values only validate a pure model at construction;
+                # they do not affect its parameters or checkpoint shapes.
+                continue
+            if key in (
+                "tucker_ranks",
+                "tucker_terms",
+                "tucker_attention_ranks",
+                "tucker_gate_up_ranks",
+                "tucker_down_ranks",
+            ):
+                saved_value = saved_value or None
+                current_value = current_value or None
+            if saved_value != current_value:
+                mismatches.append(
+                    f"{key}: checkpoint={saved_value!r}, current={current_value!r}"
+                )
+        if mismatches:
+            raise ValueError(
+                "Checkpoint architecture does not match the requested model. "
+                "Repeat the original tensorized/Tucker CLI flags. Mismatches: "
+                + "; ".join(mismatches)
+            )
     model.load_state_dict(ckpt["model"])
     if load_optimizer and opt is not None and ckpt.get("optimizer") is not None:
         opt.load_state_dict(ckpt["optimizer"])

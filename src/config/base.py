@@ -35,6 +35,17 @@ def parse_args(base_parser, args, namespace):
 
     # Checkpointing
     parser.add_argument("--results-base-folder", default="./exps", type=str)
+    parser.add_argument(
+        "--checkpoint-base-folder",
+        default=None,
+        type=str,
+        help=(
+            "Optional base folder for local checkpoint staging/saving. "
+            "When set, checkpoints are written under "
+            "<checkpoint-base-folder>/<wandb_group>/<experiment_name>/ckpts "
+            "instead of --results-base-folder."
+        ),
+    )
     parser.add_argument("--permanent-ckpt-interval", default=0, type=int)
     parser.add_argument(
         "--inter-ckpts",
@@ -47,6 +58,15 @@ def parse_args(base_parser, args, namespace):
         ),
     )
     parser.add_argument("--latest-ckpt-interval", default=0, type=int)
+    parser.add_argument(
+        "--save-best-val-checkpoint",
+        action="store_true",
+        help=(
+            "Keep a single checkpoint under ckpts/best_val whenever validation "
+            "loss improves. The checkpoint includes optimizer, scheduler, RNG, "
+            "and streaming-reader state so it can be resumed for training."
+        ),
+    )
     parser.add_argument(
         "--upload-inter-ckpts-to",
         nargs="+",
@@ -75,7 +95,17 @@ def parse_args(base_parser, args, namespace):
             "upload succeeds. Requires --upload-inter-ckpts-to."
         ),
     )
-    parser.add_argument("--resume-from", default=None, type=str)
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        type=str,
+        help=(
+            "Checkpoint directory to resume from. Supports either a local path "
+            "(e.g. '/path/to/ckpt_dir') or an HF URI "
+            "(e.g. 'hf://erinya/efficient_pretrain_checkpoints/intermediate-checkpoints/"
+            "llama-12L8H_fineweb_39k/galore_lr1e-4_wd0.1/inter-ckpt-20000')."
+        ),
+    )
     parser.add_argument(
         "--decay-from-checkpoint",
         action="store_true",
@@ -89,6 +119,8 @@ def parse_args(base_parser, args, namespace):
     # Logging (WandB)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="fp8-pretrain", type=str)
+    parser.add_argument("--wandb-entity", default=None, type=str,
+        help="WandB entity (team/user). Defaults to your default entity if not set.")
     parser.add_argument("--wandb-group", default=None, type=str,
         help="WandB group. Auto-generated from model/data/iterations if not set.")
     parser.add_argument("--wandb-tags", nargs="+", default=None, type=str,
@@ -103,7 +135,10 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument(
         "--scheduler",
         default="cos",
-        choices=["linear", "cos", "wsd", "none", "cos_inf", "cos_zero", "cos_warmup_zero"],
+        choices=[
+            "linear", "cos", "wsd", "none", "cos_inf", "cos_zero",
+            "cos_warmup_zero", "inverse_sqrt",
+        ],
     )
     parser.add_argument("--cos-inf-steps", default=0, type=int)
     parser.add_argument("--iterations", default=15000, type=int)
@@ -128,8 +163,10 @@ def parse_args(base_parser, args, namespace):
             "lion", "galore_lion", "coord_lion", "block_lion",  # Lion variants
             "sgd", "galore_sgd", "coord_sgd", "block_sgd",  # SGD variants
             "apollo_adamw", "ldadamw", "fira_adamw", "galore_adafactor", "adamem",  # Apollo/LD/Fira/GaLore/AdaMeM
-            "ademamix", "dion", "adan", "adopt", "soap", "mars", "mars_m", "muon", "numuon", "swan",  # SOTA
+            "ademamix", "dion", "adan", "adopt", "soap", "mars", "mars_m", "muon",  "swan",  # SOTA
             "solo_adamw", "solo_triton_adamw", "muon", "muonlite",
+            "muonbp",  # MuonBP: block-periodic Muon (arXiv:2510.16981)
+            "tensorion",  # Tensor-aware Muon generalization (arXiv:2606.25975)
             "lora", "lora_rite",  # LoRA wrapper / LoRA-Rite
             "loro", "loro_adpt",  # LORO low-rank optimiser
             "coap_adamw",  # COAP
@@ -142,6 +179,64 @@ def parse_args(base_parser, args, namespace):
             "riemannian_sgd",   # Riemannian SGD on Stiefel manifold (LoRA factors)
         ],
     )
+    # MuonBP (block-periodic Muon, arXiv:2510.16981)
+    parser.add_argument("--muonbp-period", default=5, type=int,
+                        help="Full orthogonalization every N steps; block-orthogonalize "
+                             "on the others. Paper-recommended value is 5 (N<=1 = plain Muon).")
+    parser.add_argument("--muonbp-nblocks", default=2, type=int,
+                        help="Number of contiguous blocks each Muon matrix is partitioned "
+                             "into on a block step (paper: number of matrix shards / TP degree).")
+    # Tensorion (tensor-aware generalization of Muon, arXiv:2606.25975)
+    parser.add_argument(
+        "--tensorion-min-dim",
+        default=3,
+        type=int,
+        help=(
+            "Minimum logical parameter order handled by Tensorion. With the "
+            "default 3, eligible 2-D parameters are handled by Muon and all "
+            "remaining parameters by AdamW."
+        ),
+    )
+    parser.add_argument(
+        "--tensorion-ns-steps",
+        default=5,
+        type=int,
+        help="Newton-Schulz iterations used for the selected unfolding.",
+    )
+    parser.add_argument(
+        "--tensorion-orthogonalization",
+        default="ns",
+        choices=["ns", "svd"],
+        help="Use practical Newton-Schulz or exact SVD for the Tensorion LMO.",
+    )
+    parser.add_argument(
+        "--tensorion-nesterov",
+        action="store_true",
+        help="Use the optional Nesterov momentum variant (Algorithm 1 uses heavy-ball).",
+    )
+    parser.add_argument(
+        "--tensorion-adjust-lr",
+        dest="tensorion_adjust_lr",
+        action="store_true",
+        default=True,
+        help="Apply Algorithm 1's 0.2*sqrt(max(m_tau,n_tau)) update scaling.",
+    )
+    parser.add_argument(
+        "--no-tensorion-adjust-lr",
+        dest="tensorion_adjust_lr",
+        action="store_false",
+        help="Disable Tensorion's unfolding-dimension learning-rate scaling.",
+    )
+    # Stable-rank / spectrum tracking (see optim/spectral_tracking.py)
+    parser.add_argument("--stable-rank-interval", default=0, type=int,
+                        help="Log normalized stable rank per weight projection "
+                             "every N iterations (0 = disabled). See NuMuon paper.")
+    parser.add_argument("--spectrum-interval", default=0, type=int,
+                        help="Log accumulated per-projection log10 singular-value "
+                             "curves every N iterations (0 = use stable-rank interval).")
+    parser.add_argument("--stable-rank-log-spectrum", action="store_true",
+                        help="Also log a singular-value line plot for every tracked "
+                             "layer/projection at --spectrum-interval cadence.")
     parser.add_argument("--batch-size", default=32, type=int)
     parser.add_argument("--eval-batch-size", default=32, type=int)
     parser.add_argument("--acc-steps", default=4, type=int)
@@ -187,39 +282,394 @@ def parse_args(base_parser, args, namespace):
             "fineweb-edu",
         ],
     )
-    parser.add_argument("--tokenizer", default="gpt2", choices=["gpt2", "mistral", "qwen3"])
+    parser.add_argument("--tokenizer", default="gpt2", choices=["gpt2", "mistral"])
     parser.add_argument("--vocab-size", default=50304, type=int)
     parser.add_argument("--data-in-ram", action="store_true")
     parser.add_argument("--local_data", action="store_true", help="For local debug with C4 samples")
     parser.add_argument("--local_data_path", type=str, default=None, help="Local path to data folder for local debug with C4")
+    parser.add_argument(
+        "--fineweb-source",
+        default="auto",
+        choices=["auto", "local", "hf"],
+        help=(
+            "FineWeb source: local parquet shards, exact Hugging Face parquet "
+            "streaming, or auto local-then-HF fallback."
+        ),
+    )
+    parser.add_argument(
+        "--fineweb-hf-repo-id",
+        default="HuggingFaceFW/fineweb-edu",
+        help="Hugging Face dataset repo for exact FineWeb parquet streaming.",
+    )
+    parser.add_argument(
+        "--fineweb-hf-data-prefix",
+        default="sample/100BT",
+        help="Path prefix inside the Hugging Face FineWeb dataset repo.",
+    )
+    parser.add_argument(
+        "--fineweb-hf-revision",
+        default="main",
+        help=(
+            "Requested Hugging Face revision for FineWeb. It is resolved to a "
+            "commit SHA and stored in checkpoints for exact resume."
+        ),
+    )
 
     # Model
     parser.add_argument(
         "--model",
         default="llama",
-        choices=["base", "llama", "qwen3"],
+        choices=["base", "llama"],
+    )
+    parser.add_argument(
+        "--attention-type",
+        default="standard",
+        choices=["standard", "tensorized"],
+        help="Attention implementation used in every transformer block.",
+    )
+    parser.add_argument(
+        "--linear-parameterization",
+        default="dense",
+        choices=["dense", "tucker"],
+        help=(
+            "Parameterisation of every independent Linear in the model. "
+            "'tucker' replaces Q/K/V/O, all MLP projections, and the Llama "
+            "lm_head."
+        ),
+    )
+    parser.add_argument(
+        "--target-parameter-count",
+        default=0,
+        type=int,
+        help=(
+            "Optional whole-model parameter target for Tucker experiments. "
+            "With --tucker-equal-params it is matched exactly using trainable "
+            "corrections; with --no-tucker-equal-params it is validation-only "
+            "and ranks remain the sole source of parameters."
+        ),
+    )
+    parser.add_argument(
+        "--target-parameter-tolerance",
+        default=0,
+        type=int,
+        help=(
+            "Allowed absolute difference from --target-parameter-count in "
+            "pure rank-only Tucker mode. It never adds parameters."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-rank",
+        default="auto",
+        type=str,
+        help=(
+            "Tucker rank policy: 'auto' chooses the closest per-layer rank tuple "
+            "under the dense budget; an integer applies one capped scalar rank "
+            "to all four modes."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-ranks",
+        default=None,
+        type=str,
+        help=(
+            "Optional explicit four mode ranks as r1,r2,r3,r4. Overrides "
+            "--tucker-rank and is validated for every Linear shape."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-terms",
+        default=1,
+        type=int,
+        help=(
+            "Number of independent Tucker terms summed in each replaced "
+            "Linear. Values above one enable Block Term Decomposition and "
+            "require --no-tucker-equal-params."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-attention-ranks",
+        default=None,
+        type=str,
+        help=(
+            "Optional four mode ranks for q_proj, k_proj, v_proj, and o_proj. "
+            "Overrides the default Tucker rank policy for attention layers."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-gate-up-ranks",
+        default=None,
+        type=str,
+        help=(
+            "Optional four mode ranks for gate_proj and up_proj. Overrides "
+            "the default Tucker rank policy for these FFN layers."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-down-ranks",
+        default=None,
+        type=str,
+        help=(
+            "Optional four mode ranks for down_proj. Overrides the default "
+            "Tucker rank policy for FFN output layers."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-rank-plan",
+        default=None,
+        type=str,
+        help=(
+            "Optional JSON file mapping every Tucker module name to four "
+            "mode ranks. This overrides scalar, global, and layer-type rank "
+            "policies and enables adaptive per-module rounding plans."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-progressive-stages",
+        nargs="+",
+        default=None,
+        metavar="STEP:PARAMETERS",
+        help=(
+            "Enable single-process function-preserving Tucker rank growth. "
+            "Supply an increasing schedule such as 0:133000000 "
+            "4000:160000000 8000:190000000 12000:225000000 "
+            "16000:257676352. The initial model is built from the ordinary "
+            "Tucker rank flags and later ranks are chosen automatically."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-progressive-warmup-steps",
+        default=400,
+        type=int,
+        help="Gradient warmup for parameters introduced by each rank expansion.",
+    )
+    parser.add_argument(
+        "--tucker-progressive-seed",
+        default=1701,
+        type=int,
+        help="Deterministic seed used for new orthogonal factor columns.",
+    )
+    parser.add_argument(
+        "--tucker-progressive-verify-rtol",
+        default=5e-5,
+        type=float,
+        help=(
+            "Maximum relative dense-weight error allowed by a supposedly "
+            "function-preserving rank transition."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-forward-mode",
+        default="auto",
+        choices=["auto", "contract", "materialize"],
+        help=(
+            "Tucker execution path. 'auto' uses dense effective-weight "
+            "materialisation for large training batches to avoid enormous "
+            "token-wise intermediates, and contractions for small inputs."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-retract-every-step",
+        action="store_true",
+        help=(
+            "After every optimizer step, QR-orthonormalize every Tucker factor "
+            "and absorb the triangular factors into the core without changing "
+            "the effective dense weight."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-vector-transport",
+        action="store_true",
+        help=(
+            "After Tucker QR retraction, transport first-order optimizer "
+            "momentum through the differentiated QR map and the matching "
+            "core gauge transformation."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-riemannian-muon",
+        action="store_true",
+        help=(
+            "Project each Tucker-factor gradient onto the column-Stiefel "
+            "tangent space before its Muon momentum/update. Requires "
+            "per-step QR retraction and optimizer-state vector transport."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-riemannian-muon-post-ns-project",
+        action="store_true",
+        help=(
+            "After Newton-Schulz, project each Tucker-factor Muon update "
+            "back onto the column-Stiefel tangent space before the existing "
+            "QR retraction and vector transport."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-dense-adamw-matrices",
+        action="store_true",
+        help=(
+            "Keep matrix modules assigned to AdamW dense instead of Tucker. "
+            "For the current Llama grouping this keeps lm_head as nn.Linear; "
+            "embeddings are already dense and norms remain vectors."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-lr-scaling-mode",
+        default="none",
+        choices=[
+            "none",
+            "spectron_bound",
+            "first_order",
+            "first_order_calibrated",
+            "paper_mup",
+            "paper_mup_functional",
+        ],
+        help=(
+            "Couple each Tucker core and its four Stiefel factors under one "
+            "LR policy. Spectral modes enforce a reconstructed-weight budget; "
+            "'first_order_calibrated' anchors the first update to the legacy "
+            "coefficient; 'paper_mup_functional' removes the internal shape "
+            "scale and preserves the legacy first-order functional budget; "
+            "'none' preserves legacy updates."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-lr-scaling-eps",
+        default=1e-8,
+        type=float,
+        help="Numerical epsilon in the Tucker LR denominator.",
+    )
+    parser.add_argument(
+        "--tucker-lr-scaling-power-iters",
+        default=1,
+        type=int,
+        help="Warm-started FP32 power iterations per spectral estimate.",
+    )
+    parser.set_defaults(tucker_lr_scaling_use_stiefel_unit_norm=True)
+    parser.add_argument(
+        "--tucker-lr-scaling-use-stiefel-unit-norm",
+        dest="tucker_lr_scaling_use_stiefel_unit_norm",
+        action="store_true",
+        help="Use sigma(U)=1 while Stiefel orthogonality remains within tolerance.",
+    )
+    parser.add_argument(
+        "--no-tucker-lr-scaling-use-stiefel-unit-norm",
+        dest="tucker_lr_scaling_use_stiefel_unit_norm",
+        action="store_false",
+        help="Estimate every factor spectral norm instead of using sigma(U)=1.",
+    )
+    parser.set_defaults(tucker_lr_scaling_post_ns_project=True)
+    parser.add_argument(
+        "--tucker-lr-scaling-post-ns-project",
+        dest="tucker_lr_scaling_post_ns_project",
+        action="store_true",
+        help=(
+            "Project coupled Tucker-factor directions back onto the Stiefel "
+            "tangent space after Newton-Schulz."
+        ),
+    )
+    parser.add_argument(
+        "--no-tucker-lr-scaling-post-ns-project",
+        dest="tucker_lr_scaling_post_ns_project",
+        action="store_false",
+        help=(
+            "Keep the raw Newton-Schulz direction for coupled Tucker-factor "
+            "updates; QR retraction and vector transport still run normally."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-lr-scaling-stiefel-drift-threshold",
+        default=1e-3,
+        type=float,
+        help="Orthogonality drift threshold before falling back to estimated sigma(U).",
+    )
+    parser.add_argument(
+        "--tucker-lr-scaling-strict-bound-check",
+        action="store_true",
+        help=(
+            "Debug-only exact reconstructed-weight bound check for tiny Tucker "
+            "operators; disabled for normal LLM training."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-lr-scaling-exact-svd-debug",
+        action="store_true",
+        help="Debug-only exact SVD spectral norms instead of power iteration.",
+    )
+    parser.add_argument(
+        "--tucker-lr-scaling-log-interval",
+        default=100,
+        type=int,
+        help="Log selected-layer Tucker LR scaling diagnostics every N steps.",
+    )
+    parser.set_defaults(tucker_equal_params=True)
+    parser.add_argument(
+        "--tucker-equal-params",
+        dest="tucker_equal_params",
+        action="store_true",
+        help=(
+            "Add a trainable structured sparse residual so each Tucker Linear "
+            "has exactly the original dense parameter count (default)."
+        ),
+    )
+    parser.add_argument(
+        "--no-tucker-equal-params",
+        dest="tucker_equal_params",
+        action="store_false",
+        help=(
+            "Use only Tucker factors/core: no residual or filler parameters. "
+            "The selected ranks alone determine the model size."
+        ),
+    )
+    parser.add_argument(
+        "--tensorized-mode",
+        default="reconstruction",
+        choices=["split_concat", "reconstruction"],
+        help=(
+            "Tensorized attention output: paper-faithful cubic SplitConcat or "
+            "the quadratic Corollary-1 reconstruction."
+        ),
+    )
+    parser.add_argument(
+        "--tensorized-rank",
+        default=40,
+        type=int,
+        help="Rank/dimension of the shared Q/K/V factors (paper experiments: 40).",
+    )
+    parser.add_argument(
+        "--tensorized-num-cores",
+        default=2,
+        type=int,
+        help="Number of averaged diagonal BTD core terms (paper core-2: 2).",
+    )
+    parser.add_argument(
+        "--tensorized-query-chunk-size",
+        default=8,
+        type=int,
+        help="Query chunk size used to bound memory in split_concat mode.",
+    )
+    parser.set_defaults(tensorized_causal=True)
+    parser.add_argument(
+        "--tensorized-causal",
+        dest="tensorized_causal",
+        action="store_true",
+        help="Mask both token axes of tensorized attention for next-token LM (default).",
+    )
+    parser.add_argument(
+        "--no-tensorized-causal",
+        dest="tensorized_causal",
+        action="store_false",
+        help="Disable the causal mask to reproduce the authors' public code exactly.",
     )
     parser.add_argument("--parallel-block", action="store_true")
     parser.add_argument("--use-pretrained", default="none", type=str)
     parser.add_argument("--init-std", default=0.02, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)
     parser.add_argument("--n-head", default=12, type=int)
-    parser.add_argument("--n-kv-head", default=0, type=int,
-        help="Number of key/value heads for grouped-query attention. 0 means --n-head.")
-    parser.add_argument("--head-dim", default=0, type=int,
-        help="Attention head dimension. 0 means --n-embd / --n-head.")
     parser.add_argument("--n-layer", default=24, type=int)
     parser.add_argument("--sequence-length", default=1024, type=int)
     parser.add_argument("--n-embd", default=768, type=int)
     parser.add_argument("--multiple-of", default=256, type=int)
-    parser.add_argument("--intermediate-size", default=0, type=int,
-        help="Explicit gated-MLP hidden size. 0 uses the Llama multiple-of rule.")
     parser.add_argument("--rmsnorm-eps", default=1e-5, type=float)
-    parser.add_argument("--rope-theta", default=10000.0, type=float)
-    parser.add_argument("--qk-norm", action="store_true",
-        help="Apply per-head RMSNorm to query and key projections, as in Qwen3.")
-    parser.add_argument("--tie-word-embeddings", action="store_true",
-        help="Tie token embedding and output projection weights.")
     parser.add_argument(
         "--dtype",
         default="bfloat16",
@@ -228,6 +678,18 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--bias", default=False, type=bool)
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--mlp-dim-exp-factor", default=1.0, type=float)
+    parser.add_argument(
+        "--ffn-hidden-size",
+        default=0,
+        type=int,
+        help="Explicit FFN hidden size (0 = model default; paper uses 2100).",
+    )
+    parser.add_argument(
+        "--label-smoothing",
+        default=0.0,
+        type=float,
+        help="Cross-entropy label smoothing (paper uses 0.1).",
+    )
 
     # ── FP8 training (COAT) ─────────────────────────────────────────────────
     parser.add_argument(
@@ -592,50 +1054,5 @@ def parse_args(base_parser, args, namespace):
         help="Newton-Schulz iterations (default: 6).")
     parser.add_argument("--lite-muon-theta", type=float, default=0.95,
         help="Muon momentum decay (default: 0.95).")
-
-    # -- NuMuon optimizer ---------------------------------------------------
-    parser.add_argument("--numuon-rank-start", type=float, default=1.0,
-        help="NuMuon initial rank fraction relative to min(matrix shape).")
-    parser.add_argument("--numuon-rank-end", type=float, default=0.25,
-        help="NuMuon final rank fraction relative to min(matrix shape).")
-    parser.add_argument("--numuon-rank-scheduler", type=str, default="cosine",
-        choices=["cosine", "fixed"],
-        help="NuMuon rank scheduler. Cosine holds rank-start, then decays to rank-end.")
-    parser.add_argument("--numuon-rank-warmup-fraction", type=float, default=0.1,
-        help="Fraction of total optimizer steps to keep rank-start before cosine rank decay.")
-    parser.add_argument("--numuon-rank-decay-end-fraction", type=float, default=1.0,
-        help="Fraction of total optimizer steps by which cosine rank decay reaches rank-end.")
-    parser.add_argument("--numuon-krylov-iters", type=int, default=2,
-        help="Block Krylov iterations for NuMuon top-k SVD approximation.")
-    parser.add_argument("--numuon-oversample", type=int, default=8,
-        help="Additional Block Krylov block size beyond the target rank.")
-    parser.add_argument("--numuon-no-warm-start", dest="numuon_warm_start", action="store_false",
-        help="Disable warm-starting NuMuon Block Krylov with the previous right singular basis.")
-    parser.set_defaults(numuon_warm_start=True)
-    parser.add_argument("--numuon-no-fast", dest="numuon_fast", action="store_false",
-        help="Disable the batched gesvda/CholeskyQR2 fast path and use the reference "
-             "per-matrix Block Krylov implementation.")
-    parser.set_defaults(numuon_fast=True)
-
-    # -- Tensor-train (TT) linear layers -------------------------------------
-    parser.add_argument("--use-tt", action="store_true",
-        help="Replace attention/MLP linears with tensor-train layers "
-             "(fused materialized-W forward; see src/models/tt_integration.py).")
-    parser.add_argument("--tt-rank", type=int, default=64,
-        help="Interior TT bond rank.")
-    parser.add_argument("--tt-modes-d", type=int, default=3,
-        choices=[3, 4, 5, 6, 7, 8, 9, 10],
-        help="Number of TT factors per dimension.")
-
-    parser.add_argument("--numuon-lmo-log-interval", type=int, default=0,
-        help="Log exact-SVD NuMuon LMO quality every N optimizer steps. 0 disables logging.")
-    parser.add_argument("--numuon-lmo-max-per-group", type=int, default=1,
-        help="Maximum parameters per selected group to diagnose at each LMO logging step.")
-    parser.add_argument("--numuon-lmo-groups", nargs="+", default=["ffn_gate", "ffn_down", "ffn_up"],
-        help="Parameter groups to include in NuMuon LMO diagnostics.")
-
-    # -- Stable-rank monitoring --------------------------------------------
-    parser.add_argument("--stable-rank-log-interval", type=int, default=0,
-        help="Log normalized stable rank every N optimizer steps. 0 disables logging.")
 
     return parser.parse_args(args, namespace)

@@ -41,6 +41,9 @@ def validate_checkpoint_args(args):
     )
     args.upload_inter_ckpts_to = upload_destinations
 
+    if args.save_best_val_checkpoint and args.no_local_save:
+        raise ValueError("--save-best-val-checkpoint requires local checkpoint saving.")
+
     if args.delete_local_inter_ckpts_after_upload and not upload_destinations:
         raise ValueError(
             "--delete-local-inter-ckpts-after-upload requires "
@@ -105,13 +108,15 @@ def define_wandb_metrics(downstream_evaluator=None, lm_evaluator=None):
     wandb.define_metric("final-val/*", step_metric="iter")
     wandb.define_metric("memory/*", step_metric="iter")
     wandb.define_metric("throughput/*", step_metric="iter")
-    wandb.define_metric("stable_rank/*", step_metric="iter")
-    wandb.define_metric("stable_rank_norm/*", step_metric="iter")
     wandb.define_metric("lr", step_metric="iter")
     wandb.define_metric("iter_dt", step_metric="iter")
     wandb.define_metric("tok_gpu_sec", step_metric="iter")
     wandb.define_metric("grad_norm", step_metric="iter")
     wandb.define_metric("consumed_tokens", step_metric="iter")
+    wandb.define_metric("stable_rank/*", step_metric="iter")
+    wandb.define_metric("spectrum/*", step_metric="iter")
+    wandb.define_metric("tucker/*", step_metric="iter")
+    wandb.define_metric("optimizer/*", step_metric="iter")
 
     if downstream_evaluator is not None:
         for metric_glob in downstream_evaluator.wandb_metric_globs():
@@ -194,6 +199,7 @@ def main(args):
     if distributed_backend.is_master_process() and args.wandb:
         wandb.init(
             project=args.wandb_project,
+            entity=args.wandb_entity,
             name=exp_name,
             group=wandb_group,
             tags=args.wandb_tags,
@@ -206,14 +212,6 @@ def main(args):
 
     model = get_model(args).to(args.device)
     print(f"\nModel:\n{model}")
-
-    # ── Tensor-train linears: replace nn.Linear with TTLinear *before* DDP ──
-    if args.use_tt:
-        from models.tt_integration import apply_tt, set_fused, set_modes
-        set_modes(args.tt_modes_d)
-        set_fused(True)
-        apply_tt(model, rank_mid=args.tt_rank)
-        model = model.to(args.device)
 
     # ── Riemannian LoRA: replace Linear modules with RiemannianLoraLinear *before* DDP ──
     if args.opt in ("riemannian_adamw", "riemannian_sgd"):
@@ -261,6 +259,11 @@ def main(args):
         group_specs = None
         optimized_params_cnt = sum(p.numel() for p in distributed_backend.get_raw_model(model).parameters() if p.requires_grad)
 
+    elif args.opt == "muonbp":
+        # MuonBP builds its own muon/adamw split — bypass get_parameter_group_specs
+        group_specs = None
+        optimized_params_cnt = sum(p.numel() for p in distributed_backend.get_raw_model(model).parameters() if p.requires_grad)
+
     elif args.opt in ("loro", "loro_adpt"):
         # LORO uses its own param-group structure (type: regular/lowrank_in/lowrank_out)
         from optim.memory_efficient.loro.utils import get_loro_param_groups
@@ -289,10 +292,105 @@ def main(args):
             optimized_params_cnt += sum([p.numel() for p in g["params"]])
 
     params_cnt = distributed_backend.get_raw_model(model).get_num_params()
+    raw_model = distributed_backend.get_raw_model(model)
     print("number of parameters: %.2fM" % (params_cnt / 1e6,))
     print("number of optimized parameters: %.2fM" % (optimized_params_cnt / 1e6,))
     if args.wandb and distributed_backend.is_master_process():
-        wandb.log({"parameters": params_cnt, "optimized_parameters": optimized_params_cnt})
+        parameter_logs = {
+            "iter": 0,
+            "parameters": params_cnt,
+            "optimized_parameters": optimized_params_cnt,
+        }
+        tucker_stats = getattr(raw_model, "_tucker_replacement_stats", None)
+        if tucker_stats is not None:
+            from models.tucker_linear import TuckerLinear
+
+            tucker_linear_forward_flops = sum(
+                module.forward_flops_per_token
+                for module in raw_model.modules()
+                if isinstance(module, TuckerLinear)
+            )
+            parameter_logs.update(
+                {
+                    "tucker/modules": tucker_stats.modules,
+                    "tucker/terms_per_module": tucker_stats.terms_per_module,
+                    "tucker/dense_linear_model_parameters": (
+                        tucker_stats.parameters_before
+                    ),
+                    "tucker/parameter_target": (
+                        tucker_stats.target_parameter_count
+                        or tucker_stats.parameters_after
+                    ),
+                    "tucker/actual_parameters": tucker_stats.parameters_after,
+                    "tucker/parameter_difference_from_target": (
+                        tucker_stats.parameter_difference_from_target or 0
+                    ),
+                    "tucker/parameter_target_tolerance": (
+                        tucker_stats.target_parameter_tolerance
+                    ),
+                    "tucker/core_and_factors_parameters": tucker_stats.tucker_parameters,
+                    "tucker/residual_parameters": tucker_stats.residual_parameters,
+                    "tucker/residual_matrix_parameters": (
+                        tucker_stats.residual_matrix_parameters
+                    ),
+                    "tucker/residual_tail_parameters": (
+                        tucker_stats.residual_tail_parameters
+                    ),
+                    "tucker/dense_equivalent_parameters": (
+                        tucker_stats.dense_equivalent_parameters
+                    ),
+                    "tucker/residual_fraction": (
+                        tucker_stats.residual_parameters
+                        / tucker_stats.dense_equivalent_parameters
+                    ),
+                    "tucker/linear_forward_flops_per_token": (
+                        tucker_linear_forward_flops
+                    ),
+                    "tucker/model_forward_flops_per_token": raw_model.num_fwd_flops,
+                    "tucker/model_backward_flops_per_token": raw_model.num_bck_flops,
+                    "tucker/retract_every_step": int(
+                        args.tucker_retract_every_step
+                    ),
+                    "tucker/vector_transport": int(
+                        args.tucker_vector_transport
+                    ),
+                    "tucker/riemannian_muon": int(
+                        args.tucker_riemannian_muon
+                    ),
+                    "tucker/riemannian_muon_post_ns_project": int(
+                        args.tucker_riemannian_muon_post_ns_project
+                    ),
+                    "tucker/dense_adamw_matrices": int(
+                        args.tucker_dense_adamw_matrices
+                    ),
+                    "tucker/lr_scaling_mode": args.tucker_lr_scaling_mode,
+                    "tucker/lr_scaling_power_iters": (
+                        args.tucker_lr_scaling_power_iters
+                    ),
+                    "tucker/lr_scaling_post_ns_project": int(
+                        args.tucker_lr_scaling_post_ns_project
+                    ),
+                }
+            )
+            wandb.config.update(
+                {
+                    "resolved_tucker_plans": [
+                        {
+                            "in_features": shape[0],
+                            "out_features": shape[1],
+                            "ranks": list(ranks),
+                            "residual_parameters_per_module": residual,
+                            "module_count": count,
+                        }
+                        for shape, ranks, residual, count in tucker_stats.plans
+                    ],
+                    "resolved_tucker_forward_modes": dict(
+                        tucker_stats.forward_modes
+                    ),
+                },
+                allow_val_change=True,
+            )
+        wandb.log(parameter_logs)
 
     # ── Optimiser ─────────────────────────────────────────────────────────
     if args.opt in ("riemannian_adamw", "riemannian_sgd"):
@@ -358,8 +456,231 @@ def main(args):
             quantile=args.solo_quantile,
             block_size=args.solo_block_sizes[0],
         )
-    elif args.opt in ("muon", "muonlite", "numuon"):
-        from third_party.lite.muonlite import MuonLite, NuMuon
+    elif args.opt == "tensorion":
+        from collections import Counter
+        from optim.tensorion import TensorionOptimizer, tucker_core_shape_overrides
+
+        if args.tensorion_min_dim < 2:
+            raise ValueError("--tensorion-min-dim must be at least 2.")
+
+        raw_model = distributed_backend.get_raw_model(model)
+        from models.tucker_linear import TuckerLinear
+
+        raw_tucker_factor_parameters = {
+            factor
+            for module in raw_model.modules()
+            if isinstance(module, TuckerLinear)
+            for factor in (module.U1, module.U2, module.U3, module.U4)
+        }
+        if args.tucker_lr_scaling_mode != "none":
+            if not args.tucker_riemannian_muon:
+                raise ValueError(
+                    "Tucker LR scaling requires --tucker-riemannian-muon."
+                )
+            if not args.tucker_retract_every_step:
+                raise ValueError(
+                    "Tucker LR scaling requires --tucker-retract-every-step."
+                )
+            if not args.tucker_vector_transport:
+                raise ValueError(
+                    "Tucker LR scaling requires --tucker-vector-transport."
+                )
+        logical_shape_overrides = tucker_core_shape_overrides(raw_model)
+        group_metadata = {}
+        for group in group_specs:
+            group_weight_decay = group.get("weight_decay", args.weight_decay)
+            is_projection = bool(group.get("is_proj_params", False))
+            for parameter in group["params"]:
+                group_metadata[parameter] = (group_weight_decay, is_projection)
+
+        tensorion_params = []
+        muon_params = []
+        riemannian_muon_params = []
+        adamw_by_weight_decay = {}
+        seen_parameters = set()
+        logical_shape_counts = Counter()
+        for name, raw_parameter in raw_model.named_parameters():
+            translated_names = (
+                distributed_backend.translate_model_parameter_name_for_node(name)
+            )
+            for translated_name in translated_names:
+                parameter = param_name_mapping[translated_name]
+                if parameter in seen_parameters:
+                    continue
+                seen_parameters.add(parameter)
+
+                logical_shape = logical_shape_overrides.get(
+                    raw_parameter,
+                    tuple(parameter.shape),
+                )
+                parameter_weight_decay, is_projection = group_metadata[parameter]
+                eligible_for_orthogonalized_update = (
+                    is_projection
+                    and not any(
+                        excluded in name
+                        for excluded in (
+                            "wte", "wpe", "lm_head", "embed", "core_logits"
+                        )
+                    )
+                )
+                use_tensorion = (
+                    eligible_for_orthogonalized_update
+                    and len(logical_shape) >= args.tensorion_min_dim
+                )
+                use_muon = (
+                    eligible_for_orthogonalized_update
+                    and len(logical_shape) == 2
+                    and parameter.ndim == 2
+                )
+                if use_tensorion:
+                    tensorion_params.append((name, parameter, logical_shape))
+                    logical_shape_counts[tuple(logical_shape)] += 1
+                elif use_muon:
+                    if (
+                        args.tucker_riemannian_muon
+                        and raw_parameter in raw_tucker_factor_parameters
+                    ):
+                        riemannian_muon_params.append((name, parameter))
+                    else:
+                        muon_params.append((name, parameter))
+                else:
+                    adamw_by_weight_decay.setdefault(
+                        float(parameter_weight_decay), []
+                    ).append(parameter)
+
+        adamw_param_groups = [
+            {"params": params, "weight_decay": weight_decay}
+            for weight_decay, params in adamw_by_weight_decay.items()
+        ]
+        tucker_module_specs = []
+        if args.tucker_lr_scaling_mode != "none":
+            raw_parameter_names = {
+                parameter: name for name, parameter in raw_model.named_parameters()
+            }
+
+            def optimizer_parameter(raw_parameter):
+                translated_names = (
+                    distributed_backend.translate_model_parameter_name_for_node(
+                        raw_parameter_names[raw_parameter]
+                    )
+                )
+                parameters = {
+                    param_name_mapping[translated_name]
+                    for translated_name in translated_names
+                }
+                if len(parameters) != 1:
+                    raise ValueError(
+                        "Coupled Tucker LR scaling requires each Tucker parameter "
+                        "to be locally complete on one optimizer parameter."
+                    )
+                return next(iter(parameters))
+
+            for module_name, module in raw_model.named_modules():
+                if not isinstance(module, TuckerLinear):
+                    continue
+                tucker_module_specs.append(
+                    (
+                        module_name,
+                        optimizer_parameter(module.core_matrix),
+                        tuple(
+                            optimizer_parameter(factor)
+                            for factor in (module.U1, module.U2, module.U3, module.U4)
+                        ),
+                    )
+                )
+        tensorion_parameter_count = sum(
+            parameter.numel() for _, parameter, _ in tensorion_params
+        )
+        muon_parameter_count = sum(
+            parameter.numel() for _, parameter in muon_params
+        )
+        riemannian_muon_parameter_count = sum(
+            parameter.numel() for _, parameter in riemannian_muon_params
+        )
+        adamw_parameter_count = sum(
+            parameter.numel()
+            for group in adamw_param_groups
+            for parameter in group["params"]
+        )
+        print(
+            "Tensorion/Riemannian-Muon/Muon/AdamW parameter split: "
+            f"{tensorion_parameter_count:,} / "
+            f"{riemannian_muon_parameter_count:,} / "
+            f"{muon_parameter_count:,} / "
+            f"{adamw_parameter_count:,}"
+        )
+        print(
+            "Tensorion logical tensor shapes: "
+            + (
+                ", ".join(
+                    f"{count}x{shape}"
+                    for shape, count in sorted(logical_shape_counts.items())
+                )
+                if logical_shape_counts
+                else "none (all parameters use AdamW)"
+            )
+        )
+        if args.wandb and distributed_backend.is_master_process():
+            wandb.log(
+                {
+                    "iter": 0,
+                    "optimizer/tensorion_parameters": tensorion_parameter_count,
+                    "optimizer/muon_parameters": muon_parameter_count,
+                    "optimizer/riemannian_muon_parameters": (
+                        riemannian_muon_parameter_count
+                    ),
+                    "optimizer/riemannian_muon_post_ns_project": int(
+                        args.tucker_riemannian_muon_post_ns_project
+                    ),
+                    "optimizer/adamw_parameters": adamw_parameter_count,
+                    "optimizer/tensorion_tensors": len(tensorion_params),
+                    "optimizer/muon_matrices": len(muon_params),
+                    "optimizer/riemannian_muon_factors": len(
+                        riemannian_muon_params
+                    ),
+                }
+            )
+
+        opt = TensorionOptimizer(
+            tensorion_params=tensorion_params,
+            adamw_param_groups=adamw_param_groups,
+            muon_params=muon_params,
+            riemannian_muon_params=riemannian_muon_params,
+            tucker_module_specs=tucker_module_specs,
+            tucker_lr_scaling_mode=args.tucker_lr_scaling_mode,
+            tucker_lr_scaling_eps=args.tucker_lr_scaling_eps,
+            tucker_lr_scaling_power_iters=args.tucker_lr_scaling_power_iters,
+            tucker_lr_scaling_use_stiefel_unit_norm=(
+                args.tucker_lr_scaling_use_stiefel_unit_norm
+            ),
+            tucker_lr_scaling_post_ns_project=(
+                args.tucker_lr_scaling_post_ns_project
+            ),
+            tucker_lr_scaling_stiefel_drift_threshold=(
+                args.tucker_lr_scaling_stiefel_drift_threshold
+            ),
+            tucker_lr_scaling_strict_bound_check=(
+                args.tucker_lr_scaling_strict_bound_check
+            ),
+            tucker_lr_scaling_exact_svd_debug=(
+                args.tucker_lr_scaling_exact_svd_debug
+            ),
+            tucker_lr_scaling_log_interval=args.tucker_lr_scaling_log_interval,
+            tucker_riemannian_muon_post_ns_project=(
+                args.tucker_riemannian_muon_post_ns_project
+            ),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            momentum=args.momentum,
+            nesterov=args.tensorion_nesterov,
+            adjust_lr=args.tensorion_adjust_lr,
+            ns_steps=args.tensorion_ns_steps,
+            orthogonalization=args.tensorion_orthogonalization,
+            adamw_betas=(args.beta1, args.beta2),
+            adamw_eps=1e-8,
+        )
+    elif args.opt in ("muon", "muonlite"):
+        from third_party.lite.muonlite import MuonLite
         raw_model = distributed_backend.get_raw_model(model)
         muon_params = []
         adamw_params = []
@@ -367,47 +688,40 @@ def main(args):
             translated = distributed_backend.translate_model_parameter_name_for_node(name)
             for t_name in translated:
                 t_param = param_name_mapping[t_name]
-                if t_param.ndim == 2 and not any(k in name for k in ("wte", "lm_head", "embed")):
+                if t_param.ndim == 2 and not any(
+                    k in name for k in ("wte", "wpe", "lm_head", "embed", "core_logits")
+                ):
                     muon_params.append((name, t_param))
                 else:
                     adamw_params.append((name, t_param))
+        muon_parameter_count = sum(param.numel() for _, param in muon_params)
+        adamw_parameter_count = sum(param.numel() for _, param in adamw_params)
+        print(
+            "Muon/AdamW parameter split: "
+            f"{muon_parameter_count:,} / {adamw_parameter_count:,}"
+        )
+        if args.wandb and distributed_backend.is_master_process():
+            wandb.log(
+                {
+                    "iter": 0,
+                    "optimizer/muon_parameters": muon_parameter_count,
+                    "optimizer/adamw_parameters": adamw_parameter_count,
+                }
+            )
         if args.opt == "muonlite":
-            optimizer_cls = MuonLite
             lite_kwargs = dict(
                 beta1=args.lite_beta1, beta2=args.lite_beta2,
                 chi=args.lite_chi, chi_adamw=args.lite_chi_adamw,
                 subspace_ratio=args.lite_subspace_ratio,
             )
-        elif args.opt == "numuon":
-            optimizer_cls = NuMuon
-            lite_kwargs = dict(
-                numuon_rank_start=args.numuon_rank_start,
-                numuon_rank_end=args.numuon_rank_end,
-                numuon_rank_scheduler=args.numuon_rank_scheduler,
-                numuon_rank_warmup_fraction=args.numuon_rank_warmup_fraction,
-                numuon_rank_decay_end_fraction=args.numuon_rank_decay_end_fraction,
-                numuon_krylov_iters=args.numuon_krylov_iters,
-                numuon_oversample=args.numuon_oversample,
-                numuon_warm_start=args.numuon_warm_start,
-                numuon_fast=args.numuon_fast,
-                numuon_lmo_log_interval=args.numuon_lmo_log_interval,
-                numuon_lmo_output_path=(
-                    str(exp_dir / "numuon_lmo.jsonl")
-                    if exp_dir is not None and args.numuon_lmo_log_interval > 0
-                    else None
-                ),
-                numuon_lmo_max_per_group=args.numuon_lmo_max_per_group,
-                numuon_lmo_groups=args.numuon_lmo_groups,
-            )
         else:
-            optimizer_cls = MuonLite
             # Vanilla Muon: disable LITE (no subspace, no amplification, no damping)
             lite_kwargs = dict(
                 beta1=0.0, beta2=0.0,
                 chi=1.0, chi_adamw=1.0,
                 subspace_ratio=0.0,
             )
-        opt = optimizer_cls(
+        opt = MuonLite(
             muon_params=muon_params,
             adamw_params=adamw_params,
             lr=args.lr,
@@ -433,6 +747,31 @@ def main(args):
             loro_type=args.loro_type,
             model=distributed_backend.get_raw_model(model),
             use_exact_loro=args.use_exact_loro,
+        )
+    elif args.opt == "muonbp":
+        from optim.muonbp import MuonBPOptimizer
+        raw_model = distributed_backend.get_raw_model(model)
+        muon_params = []
+        adamw_params = []
+        for name, p in raw_model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim >= 2 and not any(
+                k in name for k in ("wte", "wpe", "lm_head", "embed", "core_logits")
+            ):
+                muon_params.append(p)
+            else:
+                adamw_params.append(p)
+        opt = MuonBPOptimizer(
+            muon_params=muon_params,
+            adamw_params=adamw_params,
+            lr=args.lr,
+            momentum=args.momentum,
+            nblocks=args.muonbp_nblocks,
+            period=args.muonbp_period,
+            adamw_betas=(args.beta1, args.beta2),
+            adamw_weight_decay=args.weight_decay,
+            adamw_eps=args.eps,
         )
     elif args.opt == "adamw":
         opt = torch.optim.AdamW(
@@ -465,14 +804,22 @@ def main(args):
     scheduler = build_scheduler(opt, args)
 
     # ── Auto-resume ───────────────────────────────────────────────────────
-    if exp_dir is not None and (exp_dir / "ckpts" / "latest" / "main.pt").exists():
+    auto_resume_ckpt_name = (
+        "best_val" if args.save_best_val_checkpoint else "latest"
+    )
+    auto_resume_ckpt_dir = (
+        None if exp_dir is None else exp_dir / "ckpts" / auto_resume_ckpt_name
+    )
+    if auto_resume_ckpt_dir is not None and (
+        auto_resume_ckpt_dir / "main.pt"
+    ).exists():
         if not args.auto_resume:
             raise ValueError(
                 f"Experiment dir {exp_dir} already exists. "
                 "Set --auto-resume to resume, or use a different --experiment-name."
             )
         else:
-            args.resume_from = str(exp_dir / "ckpts" / "latest")
+            args.resume_from = str(auto_resume_ckpt_dir)
     elif distributed_backend.is_master_process() and exp_dir is not None:
         exp_dir.mkdir(parents=True, exist_ok=True)
 

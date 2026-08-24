@@ -261,63 +261,256 @@ class _PendingBatch:
     end_cursor: _SourceCursor
 
 
-def build_manifest(dataset_root: str | Path) -> Manifest:
-    """Build a manifest from direct-child parquet files under ``dataset_root``."""
-
-    root = Path(dataset_root)
-    parquet_paths = sorted(path for path in root.glob("*.parquet") if path.is_file())
-    if not parquet_paths:
-        raise FileNotFoundError(f"No direct-child parquet files found under {root}.")
-
-    shards: list[ShardManifest] = []
-    for parquet_path in parquet_paths:
-        parquet_file = pq.ParquetFile(parquet_path)
-        metadata = parquet_file.metadata
-        schema = tuple(
-            SchemaField(
-                name=field.name,
-                type=str(field.type),
-                nullable=field.nullable,
-            )
-            for field in parquet_file.schema_arrow
-        )
-        row_group_rows = tuple(
-            int(metadata.row_group(row_group_index).num_rows)
-            for row_group_index in range(metadata.num_row_groups)
-        )
-        if sum(row_group_rows) != metadata.num_rows:
-            raise ValueError(
-                f"Row-group row counts do not add up for {parquet_path}."
-            )
-        shards.append(
-            ShardManifest(
-                relative_path=parquet_path.relative_to(root).as_posix(),
-                size_bytes=parquet_path.stat().st_size,
-                schema=schema,
-                num_rows=int(metadata.num_rows),
-                row_group_rows=row_group_rows,
-            )
-        )
-
-    return Manifest(dataset_root=str(root), shards=tuple(shards))
-
-
 _validated_dataset_fingerprints: dict[str, str] = {}
 _validation_lock = threading.Lock()
 
 
-def _validate_manifest_against_disk(manifest: Manifest) -> None:
-    root_key = str(Path(manifest.dataset_root).resolve())
+class _HfParquetFile:
+    """Keep the HF file handle alive for the lifetime of the ParquetFile."""
+
+    def __init__(self, file_obj):
+        self._file_obj = file_obj
+        self._parquet_file = pq.ParquetFile(file_obj)
+
+    def __getattr__(self, name):
+        return getattr(self._parquet_file, name)
+
+    def close(self) -> None:
+        close_parquet = getattr(self._parquet_file, "close", None)
+        if close_parquet is not None:
+            close_parquet()
+        self._file_obj.close()
+
+
+class LocalParquetSource:
+    kind = "local"
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root).expanduser()
+
+    @property
+    def source_id(self) -> str:
+        return f"local:{self.root.resolve()}"
+
+    @property
+    def manifest_root(self) -> str:
+        return str(self.root)
+
+    def list_parquet_files(self) -> tuple[str, ...]:
+        return tuple(
+            path.relative_to(self.root).as_posix()
+            for path in sorted(self.root.glob("*.parquet"))
+            if path.is_file()
+        )
+
+    def size_bytes(self, relative_path: str) -> int:
+        return (self.root / relative_path).stat().st_size
+
+    def open_parquet_file(self, relative_path: str):
+        return pq.ParquetFile(self.root / relative_path)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "dataset_root": str(self.root),
+        }
+
+
+class HfParquetSource:
+    kind = "hf"
+
+    def __init__(
+        self,
+        repo_id: str,
+        data_prefix: str,
+        revision: str = "main",
+        *,
+        resolved_revision: str | None = None,
+    ):
+        try:
+            from huggingface_hub import HfApi, HfFileSystem
+        except ImportError as exc:
+            raise RuntimeError(
+                "Exact FineWeb streaming from Hugging Face requires "
+                "`huggingface_hub`."
+            ) from exc
+
+        self.repo_id = repo_id
+        self.data_prefix = data_prefix.strip("/")
+        self.requested_revision = revision
+        self.api = HfApi()
+        self.fs = HfFileSystem()
+        if resolved_revision is None:
+            repo_info = self.api.repo_info(
+                repo_id=repo_id,
+                repo_type="dataset",
+                revision=revision,
+            )
+            resolved_revision = str(repo_info.sha)
+        self.resolved_revision = resolved_revision
+        self._sizes_by_relative_path: dict[str, int] = {}
+
+    @classmethod
+    def from_metadata(cls, metadata: dict[str, Any]) -> "HfParquetSource":
+        return cls(
+            repo_id=str(metadata["repo_id"]),
+            data_prefix=str(metadata["data_prefix"]),
+            revision=str(metadata.get("requested_revision", "main")),
+            resolved_revision=str(metadata["resolved_revision"]),
+        )
+
+    @property
+    def source_id(self) -> str:
+        return (
+            f"hf:{self.repo_id}@{self.resolved_revision}/"
+            f"{self.data_prefix}"
+        )
+
+    @property
+    def manifest_root(self) -> str:
+        return f"hf://{self._base_path}"
+
+    @property
+    def _base_path(self) -> str:
+        base = f"datasets/{self.repo_id}@{self.resolved_revision}"
+        if self.data_prefix:
+            base = f"{base}/{self.data_prefix}"
+        return base.rstrip("/")
+
+    def _remote_path(self, relative_path: str) -> str:
+        relative_path = relative_path.strip("/")
+        return f"{self._base_path}/{relative_path}" if relative_path else self._base_path
+
+    def _relative_from_remote_path(self, remote_path: str) -> str:
+        normalized = remote_path.strip("/")
+        prefix = self.data_prefix.strip("/")
+        if prefix and normalized.startswith(prefix + "/"):
+            return normalized[len(prefix) + 1 :]
+        if not prefix:
+            return normalized
+        raise ValueError(
+            f"Unexpected Hugging Face parquet path {remote_path!r}; "
+            f"expected it under repo prefix {self.data_prefix!r}."
+        )
+
+    def list_parquet_files(self) -> tuple[str, ...]:
+        relative_paths: list[str] = []
+        sizes: dict[str, int] = {}
+        list_kwargs = {
+            "repo_id": self.repo_id,
+            "recursive": True,
+            "revision": self.resolved_revision,
+            "repo_type": "dataset",
+        }
+        if self.data_prefix:
+            list_kwargs["path_in_repo"] = self.data_prefix
+        repo_tree = self.api.list_repo_tree(**list_kwargs)
+        for item in repo_tree:
+            remote_path = getattr(item, "path", None)
+            if remote_path is None or not str(remote_path).endswith(".parquet"):
+                continue
+            relative_path = self._relative_from_remote_path(remote_path)
+            size = getattr(item, "size", None)
+            if size is None:
+                size = self.fs.info(self._remote_path(relative_path)).get("size")
+            sizes[relative_path] = int(size)
+            relative_paths.append(relative_path)
+
+        self._sizes_by_relative_path.update(sizes)
+        return tuple(sorted(relative_paths))
+
+    def size_bytes(self, relative_path: str) -> int:
+        if relative_path not in self._sizes_by_relative_path:
+            info = self.fs.info(self._remote_path(relative_path))
+            self._sizes_by_relative_path[relative_path] = int(info["size"])
+        return self._sizes_by_relative_path[relative_path]
+
+    def open_parquet_file(self, relative_path: str):
+        return _HfParquetFile(self.fs.open(self._remote_path(relative_path), "rb"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "repo_id": self.repo_id,
+            "data_prefix": self.data_prefix,
+            "requested_revision": self.requested_revision,
+            "resolved_revision": self.resolved_revision,
+        }
+
+
+def source_from_metadata(metadata: dict[str, Any]):
+    kind = str(metadata.get("kind", ""))
+    if kind == "local":
+        return LocalParquetSource(str(metadata["dataset_root"]))
+    if kind == "hf":
+        return HfParquetSource.from_metadata(metadata)
+    raise ValueError(f"Unsupported FineWeb parquet source kind {kind!r}.")
+
+
+def build_manifest_from_source(source) -> Manifest:
+    """Build a manifest from parquet files exposed by a source."""
+
+    parquet_paths = source.list_parquet_files()
+    if not parquet_paths:
+        raise FileNotFoundError(
+            f"No parquet files found for FineWeb source {source.source_id}."
+        )
+
+    shards: list[ShardManifest] = []
+    for relative_path in parquet_paths:
+        parquet_file = source.open_parquet_file(relative_path)
+        try:
+            metadata = parquet_file.metadata
+            schema = tuple(
+                SchemaField(
+                    name=field.name,
+                    type=str(field.type),
+                    nullable=field.nullable,
+                )
+                for field in parquet_file.schema_arrow
+            )
+            row_group_rows = tuple(
+                int(metadata.row_group(row_group_index).num_rows)
+                for row_group_index in range(metadata.num_row_groups)
+            )
+            if sum(row_group_rows) != metadata.num_rows:
+                raise ValueError(
+                    f"Row-group row counts do not add up for {relative_path}."
+                )
+            shards.append(
+                ShardManifest(
+                    relative_path=relative_path,
+                    size_bytes=source.size_bytes(relative_path),
+                    schema=schema,
+                    num_rows=int(metadata.num_rows),
+                    row_group_rows=row_group_rows,
+                )
+            )
+        finally:
+            parquet_file.close()
+
+    manifest = Manifest(dataset_root=source.manifest_root, shards=tuple(shards))
+    with _validation_lock:
+        _validated_dataset_fingerprints[source.source_id] = manifest.fingerprint
+    return manifest
+
+
+def build_manifest(dataset_root: str | Path) -> Manifest:
+    """Build a manifest from direct-child parquet files under ``dataset_root``."""
+    return build_manifest_from_source(LocalParquetSource(dataset_root))
+
+
+def _validate_manifest_against_source(manifest: Manifest, source) -> None:
+    root_key = source.source_id
     with _validation_lock:
         cached = _validated_dataset_fingerprints.get(root_key)
-        if cached == manifest.fingerprint:
-            return
-        current = build_manifest(manifest.dataset_path)
-        if current.fingerprint != manifest.fingerprint:
-            raise ValueError(
-                "Dataset files do not match the provided manifest fingerprint."
-            )
-        _validated_dataset_fingerprints[root_key] = manifest.fingerprint
+    if cached == manifest.fingerprint:
+        return
+    current = build_manifest_from_source(source)
+    if current.fingerprint != manifest.fingerprint:
+        raise ValueError(
+            "Dataset files do not match the provided manifest fingerprint."
+        )
 
 
 def _stable_hash_hex(*parts: object) -> str:
@@ -423,6 +616,7 @@ def build_snapshot_split_plan_with_val_blocks(
     val_sequences: int,
     split_seed: int = 0,
     shuffle_seed: int = 0,
+    parquet_source=None,
 ) -> SplitPlanWithValBlocks:
     """Reserve val row groups and pack their tokens into the val blocks."""
 
@@ -436,12 +630,13 @@ def build_snapshot_split_plan_with_val_blocks(
     if val_sequences == 0:
         val_row_groups: tuple[RowGroupRef, ...] = tuple()
     else:
+        parquet_source = parquet_source or LocalParquetSource(manifest.dataset_root)
         tokenizer = tokenizer_factory()
         eos_token_id = _resolve_eos_token_id(tokenizer)
         file_index_by_relative_path = {
             shard.relative_path: index for index, shard in enumerate(manifest.shards)
         }
-        parquet_files: dict[int, pq.ParquetFile] = {}
+        parquet_files: dict[int, Any] = {}
         token_buffer: list[int] = []
         selected: list[RowGroupRef] = []
 
@@ -451,8 +646,8 @@ def build_snapshot_split_plan_with_val_blocks(
                 file_index = file_index_by_relative_path[row_group.relative_path]
                 parquet_file = parquet_files.get(file_index)
                 if parquet_file is None:
-                    parquet_file = pq.ParquetFile(
-                        manifest.dataset_path / row_group.relative_path
+                    parquet_file = parquet_source.open_parquet_file(
+                        row_group.relative_path
                     )
                     parquet_files[file_index] = parquet_file
 
@@ -569,7 +764,7 @@ def _resolve_eos_token_id(tokenizer: Any) -> int:
 
 
 class FineWebEduStream(Iterator[list[int]]):
-    """Iterate fixed-size token blocks from local FineWeb parquet shards."""
+    """Iterate fixed-size token blocks from FineWeb parquet shards."""
 
     def __init__(
         self,
@@ -586,6 +781,7 @@ class FineWebEduStream(Iterator[list[int]]):
         num_token_workers: int = 0,
         doc_batch_size: int = 32,
         prefetch_batches: int = 2,
+        parquet_source=None,
     ) -> None:
         if block_tokens <= 0:
             raise ValueError("block_tokens must be a positive integer.")
@@ -617,8 +813,9 @@ class FineWebEduStream(Iterator[list[int]]):
         self.num_token_workers = num_token_workers
         self.doc_batch_size = doc_batch_size
         self.prefetch_batches = prefetch_batches
+        self.parquet_source = parquet_source or LocalParquetSource(manifest.dataset_root)
 
-        _validate_manifest_against_disk(self.manifest)
+        _validate_manifest_against_source(self.manifest, self.parquet_source)
         self._file_index_by_relative_path = {
             shard.relative_path: index for index, shard in enumerate(self.manifest.shards)
         }
@@ -903,8 +1100,9 @@ class FineWebEduStream(Iterator[list[int]]):
             self._open_parquet_file.close()
 
         shard = self.manifest.shards[file_index]
-        parquet_path = self.manifest.dataset_path / shard.relative_path
-        self._open_parquet_file = pq.ParquetFile(parquet_path)
+        self._open_parquet_file = self.parquet_source.open_parquet_file(
+            shard.relative_path
+        )
         self._open_file_index = file_index
         return self._open_parquet_file
 

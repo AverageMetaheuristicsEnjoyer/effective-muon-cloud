@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BASE_LAUNCHER="${SCRIPT_DIR}/single_gpu/tucker_transformer/fineweb_standard_attention_tensorion_muon_adamw_tucker_retract_1x_chinchilla_wd002.sh"
+
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"llama132m_btd4_r17_nolrscale_bs32acc4"}
+export TARGET_PARAMETER_COUNT=131950096
+export TARGET_PARAMETER_TOLERANCE=0
+export TUCKER_RANKS="17,17,17,17"
+export TUCKER_TERMS=4
+
+export TUCKER_VECTOR_TRANSPORT=1
+export TUCKER_RIEMANNIAN_MUON=1
+export TUCKER_DENSE_ADAMW_MATRICES=1
+export TUCKER_LR_SCALING_MODE=${TUCKER_LR_SCALING_MODE:-none}
+export TUCKER_LR_SCALING_POST_NS_PROJECT=0
+export TUCKER_LR_SCALING_USE_STIEFEL_UNIT_NORM=1
+export WEIGHT_DECAY=0.1
+export WEIGHT_DECAY_TAG=wd01
+
+export ITERATIONS=${ITERATIONS:-39250}
+export WARMUP=${WARMUP:-2000}
+export BATCH_SIZE=${BATCH_SIZE:-32}
+export ACC_STEPS=${ACC_STEPS:-4}
+export EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-32}
+export EVAL_BATCHES=${EVAL_BATCHES:-16}
+export SAVE_BEST_VAL_CHECKPOINT=1
+export LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-500}
+
+exec bash "${BASE_LAUNCHER}"
