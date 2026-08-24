@@ -414,6 +414,8 @@ def main(args):
             weight_decay=args.weight_decay,
             ns_steps=args.lite_ns_steps,
             muon_theta=args.lite_muon_theta,
+            muon_num_splits=args.muon_num_splits,
+            muon_split_dim=args.muon_split_dim,
             adamw_betas=(args.beta1, args.beta2),
             adamw_eps=1e-8,
             total_steps=args.iterations,

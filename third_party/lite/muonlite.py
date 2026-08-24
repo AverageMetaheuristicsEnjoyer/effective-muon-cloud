@@ -328,6 +328,8 @@ class MuonLite(torch.optim.Optimizer):
         weight_decay: float = 0.1,
         muon_theta: float = 0.95,
         ns_steps: int = 6,
+        muon_num_splits: int = 1,
+        muon_split_dim: int = 0,
         beta1: float = -0.25,
         beta2: float = 1.0,
         chi: float = 2.0,
@@ -376,6 +378,12 @@ class MuonLite(torch.optim.Optimizer):
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
         self.min_lr_ratio = min_lr_ratio
+        self.muon_num_splits = int(muon_num_splits)
+        self.muon_split_dim = int(muon_split_dim)
+        if self.muon_num_splits < 1:
+            raise ValueError("muon_num_splits must be at least one")
+        if self.muon_split_dim not in (0, 1):
+            raise ValueError("muon_split_dim must be either 0 (rows) or 1 (columns)")
         self.adamw_theta = adamw_betas[0]
         self.adamw_b2 = adamw_betas[1]
         self.smooth_ratio = 0.1
@@ -530,6 +538,25 @@ class MuonLite(torch.optim.Optimizer):
         os.makedirs(os.path.dirname(self.numuon_lmo_output_path), exist_ok=True)
         with open(self.numuon_lmo_output_path, "a") as f:
             f.write(json.dumps(record) + "\n")
+
+    def _blockwise_zeropower(self, matrix: torch.Tensor, ns_steps: int) -> torch.Tensor:
+        """Compute independent polar factors for equal row/column matrix blocks."""
+        if self.muon_num_splits == 1:
+            return zeropower_via_newtonschulz5(matrix, ns_steps)
+
+        dim_size = matrix.shape[self.muon_split_dim]
+        if dim_size % self.muon_num_splits:
+            raise ValueError(
+                f"Cannot split Muon matrix {tuple(matrix.shape)} into "
+                f"{self.muon_num_splits} equal blocks along dim {self.muon_split_dim}"
+            )
+
+        blocks = matrix.chunk(self.muon_num_splits, dim=self.muon_split_dim)
+        updates = [
+            zeropower_via_newtonschulz5(block.contiguous(), ns_steps)
+            for block in blocks
+        ]
+        return torch.cat(updates, dim=self.muon_split_dim)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -687,7 +714,7 @@ class MuonLite(torch.optim.Optimizer):
                             rank,
                         )
                 else:
-                    u = zeropower_via_newtonschulz5(M, ns_steps)
+                    u = self._blockwise_zeropower(M, ns_steps)
 
                 state["step"] += 1
                 p.data.mul_(1 - lr * wd)

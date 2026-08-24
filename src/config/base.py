@@ -502,8 +502,14 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--ademamix_alpha_warmup_steps", type=int, default=None)
     parser.add_argument("--newton_schulz_func", type=str, choices=['cesista', 'jordan', 'svd', 'express_orig', 'express_modified', '5777_left_1e_3', '5779_left_15e_4'], default="jordan")
     parser.add_argument("--muon_ns_steps", type=int, default=5)
-    parser.add_argument("--muon_num_splits", type=int, default=1)
-    parser.add_argument("--muon_split_dim", type=int, default=0)
+    parser.add_argument(
+        "--muon-num-splits", "--muon_num_splits", dest="muon_num_splits", type=int, default=1,
+        help="Split each 2D Muon matrix into this many equal blocks before Newton-Schulz.",
+    )
+    parser.add_argument(
+        "--muon-split-dim", "--muon_split_dim", dest="muon_split_dim", type=int, default=0,
+        choices=(0, 1), help="Matrix dimension along which blockwise Muon splits matrices.",
+    )
     parser.add_argument("--muon_headwise", default=False, action="store_true")
     parser.add_argument("--muon_adjust_lr", type=str, choices=['spectral_norm', 'rms_norm'], default="rms_norm")
     parser.add_argument("--muon_adamw_lr_scale", type=float, default=1.0)
