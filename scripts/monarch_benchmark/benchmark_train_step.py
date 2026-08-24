@@ -436,7 +436,7 @@ def run(args) -> dict:
             f"GPU became occupied before model construction: {initial_foreign}"
         )
 
-    geometry = model_geometry(spec, args.variant)
+    geometry = model_geometry(spec, args.variant, args.monarch_blocks)
     model, optimizer = build_model_and_optimizer(args, spec, geometry, device)
     actual_parameters = sum(parameter.numel() for parameter in model.parameters())
     if actual_parameters != geometry["params_expected"]:

@@ -9,10 +9,11 @@ import tempfile
 from pathlib import Path
 
 
-# Monarch factorises every Linear, so at a shared geometry it carries 43-64 % of
-# the dense parameters. "monarch_iso" is the same depth and head_dim widened until
-# the counts match the dense baseline to within 0.9 %, so the two can be compared
-# at one parameter budget.
+# Monarch factorises every Linear, so at a shared geometry it carries a fraction of
+# the dense parameters that depends on the block count: 43-64 % at four blocks,
+# 80-87 % at two. "iso" is the same depth and head_dim widened until the counts
+# match the dense baseline to within 0.9 %, so the two can be compared at one
+# parameter budget. Both are keyed by block count because both depend on it.
 MODEL_SPECS = (
     {
         "name": "257m",
@@ -22,9 +23,20 @@ MODEL_SPECS = (
         "n_head": 8,
         "intermediate_size": 0,
         "dense_params_expected": 257_188_864,
-        "monarch_params_expected": 163_603_456,
-        "monarch_iso": {"n_embd": 1408, "n_head": 11,
-                        "intermediate_size": 3968, "params_expected": 257_395_072},
+        "monarch": {
+            4: {
+                "params_expected": 163_603_456,
+                "iso": {"n_embd": 1408, "n_head": 11,
+                        "intermediate_size": 3968,
+                        "params_expected": 257_395_072},
+            },
+            2: {
+                "params_expected": 224_158_720,
+                "iso": {"n_embd": 1152, "n_head": 9,
+                        "intermediate_size": 2560,
+                        "params_expected": 256_602_240},
+            },
+        },
     },
     {
         "name": "834m",
@@ -34,9 +46,20 @@ MODEL_SPECS = (
         "n_head": 12,
         "intermediate_size": 0,
         "dense_params_expected": 834_086_400,
-        "monarch_params_expected": 423_568_896,
-        "monarch_iso": {"n_embd": 2304, "n_head": 18,
-                        "intermediate_size": 6016, "params_expected": 831_764_736},
+        "monarch": {
+            4: {
+                "params_expected": 423_568_896,
+                "iso": {"n_embd": 2304, "n_head": 18,
+                        "intermediate_size": 6016,
+                        "params_expected": 831_764_736},
+            },
+            2: {
+                "params_expected": 692_528_640,
+                "iso": {"n_embd": 1664, "n_head": 13,
+                        "intermediate_size": 4992,
+                        "params_expected": 832_028_288},
+            },
+        },
     },
     {
         "name": "1p4b",
@@ -46,9 +69,20 @@ MODEL_SPECS = (
         "n_head": 16,
         "intermediate_size": 0,
         "dense_params_expected": 1_439_270_912,
-        "monarch_params_expected": 690_587_648,
-        "monarch_iso": {"n_embd": 3072, "n_head": 24,
-                        "intermediate_size": 8960, "params_expected": 1_427_524_608},
+        "monarch": {
+            4: {
+                "params_expected": 690_587_648,
+                "iso": {"n_embd": 3072, "n_head": 24,
+                        "intermediate_size": 8960,
+                        "params_expected": 1_427_524_608},
+            },
+            2: {
+                "params_expected": 1_175_029_760,
+                "iso": {"n_embd": 2304, "n_head": 18,
+                        "intermediate_size": 6144,
+                        "params_expected": 1_442_232_576},
+            },
+        },
     },
     {
         "name": "3p5b",
@@ -58,9 +92,20 @@ MODEL_SPECS = (
         "n_head": 24,
         "intermediate_size": 0,
         "dense_params_expected": 3_480_136_704,
-        "monarch_params_expected": 1_564_388_352,
-        "monarch_iso": {"n_embd": 4736, "n_head": 37,
-                        "intermediate_size": 12800, "params_expected": 3_476_872_832},
+        "monarch": {
+            4: {
+                "params_expected": 1_564_388_352,
+                "iso": {"n_embd": 4736, "n_head": 37,
+                        "intermediate_size": 12800,
+                        "params_expected": 3_476_872_832},
+            },
+            2: {
+                "params_expected": 2_819_533_824,
+                "iso": {"n_embd": 3456, "n_head": 27,
+                        "intermediate_size": 8960,
+                        "params_expected": 3_487_826_304},
+            },
+        },
     },
     {
         "name": "6p9b",
@@ -70,9 +115,20 @@ MODEL_SPECS = (
         "n_head": 32,
         "intermediate_size": 11008,
         "dense_params_expected": 6_888_361_984,
-        "monarch_params_expected": 2_970_882_048,
-        "monarch_iso": {"n_embd": 6400, "n_head": 50,
-                        "intermediate_size": 17152, "params_expected": 6_883_334_400},
+        "monarch": {
+            4: {
+                "params_expected": 2_970_882_048,
+                "iso": {"n_embd": 6400, "n_head": 50,
+                        "intermediate_size": 17152,
+                        "params_expected": 6_883_334_400},
+            },
+            2: {
+                "params_expected": 5_529_407_488,
+                "iso": {"n_embd": 4608, "n_head": 36,
+                        "intermediate_size": 12160,
+                        "params_expected": 6_890_623_488},
+            },
+        },
     },
 )
 
@@ -131,17 +187,17 @@ def model_spec(name: str) -> dict:
     raise KeyError(f"unknown model size {name!r}")
 
 
-def model_geometry(spec: dict, variant_name: str) -> dict:
+def model_geometry(spec: dict, variant_name: str, monarch_blocks: int) -> dict:
     """The geometry a variant is built at, and the parameter count it must hit."""
     if variant_name == "monarch_muon_iso":
-        return {"n_layer": spec["n_layer"], **spec["monarch_iso"]}
+        return {"n_layer": spec["n_layer"], **spec["monarch"][monarch_blocks]["iso"]}
     return {
         "n_layer": spec["n_layer"],
         "n_embd": spec["n_embd"],
         "n_head": spec["n_head"],
         "intermediate_size": spec["intermediate_size"],
         "params_expected": (
-            spec["monarch_params_expected"]
+            spec["monarch"][monarch_blocks]["params_expected"]
             if variant_name == "monarch_muon"
             else spec["dense_params_expected"]
         ),
