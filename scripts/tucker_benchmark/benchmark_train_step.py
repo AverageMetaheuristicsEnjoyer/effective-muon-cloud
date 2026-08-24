@@ -82,11 +82,12 @@ def make_config(args) -> SimpleNamespace:
 def instantiate_model(config: SimpleNamespace, device: torch.device):
     previous_dtype = torch.get_default_dtype()
     try:
-        torch.set_default_dtype(torch.bfloat16)
+        torch.set_default_dtype(torch.float32)
         with torch.device(device):
             model = get_model(config)
     finally:
         torch.set_default_dtype(previous_dtype)
+    model.to(dtype=torch.bfloat16)
     model.train()
     return model
 
