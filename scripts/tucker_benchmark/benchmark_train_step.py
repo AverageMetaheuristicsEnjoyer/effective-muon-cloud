@@ -38,6 +38,7 @@ from scripts.tucker_benchmark.common import (  # noqa: E402
 
 
 def make_config(args) -> SimpleNamespace:
+    static_tucker = args.variant == "static_tucker"
     return SimpleNamespace(
         model="llama",
         vocab_size=50_304,
@@ -56,9 +57,7 @@ def make_config(args) -> SimpleNamespace:
         qkv_clipping=False,
         qkv_clipping_factor=1.0,
         attention_type="standard",
-        linear_parameterization=(
-            "tucker" if args.variant == "static_tucker" else "dense"
-        ),
+        linear_parameterization="tucker" if static_tucker else "dense",
         tucker_rank="259",
         tucker_ranks=None,
         tucker_attention_ranks=None,
@@ -68,10 +67,10 @@ def make_config(args) -> SimpleNamespace:
         tucker_terms=1,
         tucker_equal_params=False,
         tucker_forward_mode="contract",
-        tucker_dense_adamw_matrices=True,
-        tucker_retract_every_step=True,
-        tucker_vector_transport=True,
-        tucker_riemannian_muon=True,
+        tucker_dense_adamw_matrices=static_tucker,
+        tucker_retract_every_step=static_tucker,
+        tucker_vector_transport=static_tucker,
+        tucker_riemannian_muon=static_tucker,
         target_parameter_count=257_676_352,
         target_parameter_tolerance=12_312,
         fp8=False,

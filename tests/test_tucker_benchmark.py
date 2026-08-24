@@ -67,6 +67,13 @@ class TuckerBenchmarkTest(unittest.TestCase):
             make_config,
         )
 
+        dense_args = self.args()
+        dense_args.variant = "dense_adamw"
+        dense_args.microbatch = 2
+        dense_config = make_config(dense_args)
+        self.assertFalse(dense_config.tucker_retract_every_step)
+        self.assertFalse(dense_config.tucker_vector_transport)
+
         args = self.args()
         args.variant = "static_tucker"
         args.microbatch = 2
