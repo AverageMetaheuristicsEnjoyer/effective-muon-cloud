@@ -257,7 +257,7 @@ tbody tr.base td{background:#16223a}.oom{color:#ff8f8f;font-weight:700}.note{pad
 <h2>Method and fairness controls</h2><div class="note" id="method"></div><footer id="footer"></footer>
 <script>
 const DATA=__DATA__;const C=DATA.comparison;
-const COLORS={monarch_muon:'#6ee7c7',dense_adamw:'#ffad66',dense_muon:'#8fa8ff',galore:'#f78fb3',frugal:'#a0e57c',apollo:'#5ad2f4',apollo_mini:'#c9a0ff',fira:'#ffd166'};
+const COLORS={monarch_muon:'#6ee7c7',monarch_muon_iso:'#2fb894',dense_adamw:'#ffad66',dense_muon:'#8fa8ff',galore:'#f78fb3',frugal:'#a0e57c',apollo:'#5ad2f4',apollo_mini:'#c9a0ff',fira:'#ffd166'};
 const LABELS=Object.fromEntries(C.variants.map(v=>[v.name,v.label]));
 const fmt=(x,d=2)=>x===null||x===undefined?'--':Number(x).toFixed(d);
 const gb=b=>b===null||b===undefined?'--':(b/1e9).toFixed(2);

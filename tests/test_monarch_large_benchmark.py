@@ -32,6 +32,7 @@ from scripts.monarch_benchmark.common import (
     POINT_CONTROL_FIELDS,
     VARIANTS,
     accumulation_steps,
+    model_geometry,
     parse_compute_apps,
     parse_gpu_inventory,
     percentile,
@@ -132,6 +133,19 @@ class BenchmarkMatrixTest(unittest.TestCase):
         self.assertLess(dense[-1], 7_000_000_000)
         self.assertTrue(all(m < d for m, d in zip(monarch, dense)))
 
+    def test_iso_geometry_matches_the_dense_parameter_budget(self):
+        for spec in MODEL_SPECS:
+            with self.subTest(model=spec["name"]):
+                iso = model_geometry(spec, "monarch_muon_iso")
+                self.assertLess(
+                    abs(iso["params_expected"] - spec["dense_params_expected"])
+                    / spec["dense_params_expected"],
+                    0.01,
+                )
+                self.assertEqual(iso["n_layer"], spec["n_layer"])
+                self.assertEqual(iso["n_embd"] // iso["n_head"], 128)
+                self.assertGreater(iso["n_embd"], spec["n_embd"])
+
     def test_meta_models_match_declared_parameter_counts(self):
         with torch.device("meta"):
             for spec in MODEL_SPECS:
@@ -148,6 +162,14 @@ class BenchmarkMatrixTest(unittest.TestCase):
                     self.assertEqual(
                         sum(parameter.numel() for parameter in monarch.parameters()),
                         spec["monarch_params_expected"],
+                    )
+                    iso_geometry = model_geometry(spec, "monarch_muon_iso")
+                    iso = Llama(make_config(iso_geometry, sequence_length=256))
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        apply_monarch(iso, nblocks=4, verbose=False)
+                    self.assertEqual(
+                        sum(parameter.numel() for parameter in iso.parameters()),
+                        iso_geometry["params_expected"],
                     )
 
     def test_every_variant_has_a_declared_backend(self):

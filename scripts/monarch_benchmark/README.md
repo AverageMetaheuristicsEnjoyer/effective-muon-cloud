@@ -12,6 +12,7 @@ model size, optimizer, and batch size.
 | `dense_adamw` | `torch.optim.AdamW` | fused; the baseline every ratio is taken against |
 | `dense_muon` | `dion.Muon` | five BF16 Newton–Schulz iterations |
 | `monarch_muon` | `MonarchMuonOptimizer` | four-block Monarch linears, not a dense model |
+| `monarch_muon_iso` | `MonarchMuonOptimizer` | the same, widened until the parameter count matches the dense baseline |
 | `galore` | `fira.GaLoreAdamW` | SVD projection, rank = density × hidden size |
 | `frugal` | `frugal.BlockAdamW` | blockwise state + SignSGD elsewhere; no projector |
 | `apollo` | `apollo.APOLLOAdamW` | random projection, channel-wise scaling |

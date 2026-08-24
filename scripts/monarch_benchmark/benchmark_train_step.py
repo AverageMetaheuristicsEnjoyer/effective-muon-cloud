@@ -38,6 +38,7 @@ from scripts.monarch_benchmark.common import (  # noqa: E402
     atomic_write_json,
     foreign_compute_apps,
     gpu_snapshot,
+    model_geometry,
     model_spec,
     requested_controls,
     summarize,
@@ -46,6 +47,7 @@ from scripts.monarch_benchmark.common import (  # noqa: E402
 
 OPTIMIZER_BACKENDS = {
     "monarch_muon": "MonarchMuonOptimizer",
+    "monarch_muon_iso": "MonarchMuonOptimizer",
     "dense_adamw": "torch.optim.AdamW",
     "dense_muon": "dion.Muon",
     "galore": "fira.GaLoreAdamW",
@@ -100,18 +102,18 @@ class ContaminationMonitor:
             self.error = self.error or "GPU contamination monitor did not stop"
 
 
-def make_config(spec: dict, sequence_length: int) -> SimpleNamespace:
+def make_config(geometry: dict, sequence_length: int) -> SimpleNamespace:
     return SimpleNamespace(
         model="llama",
         vocab_size=50304,
         sequence_length=sequence_length,
         dropout=0.0,
-        n_layer=spec["n_layer"],
-        n_embd=spec["n_embd"],
-        n_head=spec["n_head"],
+        n_layer=geometry["n_layer"],
+        n_embd=geometry["n_embd"],
+        n_head=geometry["n_head"],
         n_kv_head=0,
         head_dim=0,
-        intermediate_size=spec["intermediate_size"],
+        intermediate_size=geometry["intermediate_size"],
         multiple_of=256,
         rmsnorm_eps=1e-5,
         rope_theta=10000.0,
@@ -201,12 +203,12 @@ def build_memory_efficient_optimizer(args, spec: dict, model: Llama):
     return APOLLOAdamW(groups, scale_front=False, **adamw_kwargs)
 
 
-def build_model_and_optimizer(args, spec: dict, device: torch.device):
-    config = make_config(spec, args.sequence_length)
+def build_model_and_optimizer(args, spec: dict, geometry: dict, device: torch.device):
+    config = make_config(geometry, args.sequence_length)
     model = instantiate_model(config, device)
     model.train()
 
-    if args.variant == "monarch_muon":
+    if args.variant in ("monarch_muon", "monarch_muon_iso"):
         apply_monarch(model, nblocks=args.monarch_blocks, verbose=False)
         patch_monarch_linear(blocked=True, fast_riffle=True)
         muon_params = []
@@ -434,16 +436,13 @@ def run(args) -> dict:
             f"GPU became occupied before model construction: {initial_foreign}"
         )
 
-    model, optimizer = build_model_and_optimizer(args, spec, device)
+    geometry = model_geometry(spec, args.variant)
+    model, optimizer = build_model_and_optimizer(args, spec, geometry, device)
     actual_parameters = sum(parameter.numel() for parameter in model.parameters())
-    expected_parameters = (
-        spec["monarch_params_expected"]
-        if args.variant == "monarch_muon"
-        else spec["dense_params_expected"]
-    )
-    if actual_parameters != expected_parameters:
+    if actual_parameters != geometry["params_expected"]:
         raise RuntimeError(
-            f"parameter-count mismatch: actual={actual_parameters}, expected={expected_parameters}"
+            f"parameter-count mismatch: actual={actual_parameters}, "
+            f"expected={geometry['params_expected']}"
         )
 
     generator = torch.Generator(device=device)
@@ -574,6 +573,7 @@ def run(args) -> dict:
         "status": "complete",
         "model": {
             **spec,
+            "geometry": geometry,
             "dense_equivalent_parameters": spec["dense_params_expected"],
             "actual_parameters": actual_parameters,
         },
@@ -588,7 +588,9 @@ def run(args) -> dict:
                 if variant["family"] == "memory_efficient" and args.variant != "frugal"
                 else None
             ),
-            "newton_schulz_steps": 5 if args.variant in ("monarch_muon", "dense_muon") else None,
+            "newton_schulz_steps": (
+                5 if args.variant in ("monarch_muon", "monarch_muon_iso", "dense_muon") else None
+            ),
             "cuda_timing": "events on a dedicated stream; device-wide sync at step end",
         },
         "gpu": {
