@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-print("variant\tmicrobatch\tstatus\tmedian_ms\ttokens_per_second\tpeak_gb\tstate_gb\tmodel_gb\toptimizer_ms\tgrad_clip_ms\tgpu")
+print("variant\tmicrobatch\tstatus\tmedian_ms\tforward_ms\tbackward_ms\tforward_backward_ms\tforward_backward_tokens_per_second\toptimizer_ms\tpeak_gb\tstate_gb\tmodel_gb\tgrad_clip_ms\tgpu")
 for path in sorted(Path(sys.argv[1]).glob("*.json")):
     payload = json.loads(path.read_text())
     status = payload.get("status")
@@ -33,11 +33,14 @@ for path in sorted(Path(sys.argv[1]).glob("*.json")):
         payload["benchmark"]["microbatch"],
         status,
         round(summary["host_total_ms"]["median"], 3),
-        round(summary["tokens_per_second"]["median"], 1),
+        round(summary["forward_ms"]["median"], 3),
+        round(summary["backward_ms"]["median"], 3),
+        round(summary["forward_backward_ms"]["median"], 3),
+        round(summary["tokens_per_second_forward_backward"]["median"], 1),
+        round(summary["optimizer_ms"]["median"], 3),
         round(memory["peak_allocated_bytes"] / 1e9, 3),
         round(memory["optimizer_state_bytes"] / 1e9, 3),
         round(memory["model_bytes"] / 1e9, 3),
-        round(summary["optimizer_ms"]["median"], 3),
         round(summary["grad_clip_ms"]["median"], 3),
         payload["gpu"]["name"],
     ))))

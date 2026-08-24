@@ -57,6 +57,40 @@ class TuckerBenchmarkTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(find_spec("torch"), "PyTorch is not installed")
+    def test_dense_muon_step(self):
+        import torch
+
+        from models.utils import get_model
+        from scripts.tucker_benchmark.benchmark_train_step import (
+            build_dense_muon_optimizer,
+            make_config,
+        )
+
+        args = self.args()
+        args.variant = "dense_muon"
+        args.microbatch = 2
+        config = make_config(args)
+        config.vocab_size = 32
+        config.sequence_length = 4
+        config.n_layer = 1
+        config.n_embd = 8
+        config.n_head = 2
+        config.multiple_of = 4
+        config.ffn_hidden_size = 16
+
+        model = get_model(config)
+        optimizer, split = build_dense_muon_optimizer(args, model)
+        inputs = torch.randint(0, config.vocab_size, (2, config.sequence_length))
+        targets = torch.randint(0, config.vocab_size, (2, config.sequence_length))
+        loss = model(inputs, targets=targets)["loss"]
+        loss.backward()
+        optimizer.step()
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreater(split["muon"], 0)
+        self.assertGreater(split["adamw"], 0)
+
+    @unittest.skipUnless(find_spec("torch"), "PyTorch is not installed")
     def test_static_tucker_step_never_materializes_weight(self):
         import torch
 

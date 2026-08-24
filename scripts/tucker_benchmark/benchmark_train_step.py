@@ -168,12 +168,55 @@ def build_tucker_optimizer(args, model):
         tucker_lr_scaling_exact_svd_debug=False,
         tucker_lr_scaling_log_interval=100,
         tucker_riemannian_muon_post_ns_project=False,
+        parallel_tucker_components=True,
         lr=args.lr,
         weight_decay=args.weight_decay,
         momentum=args.momentum,
         nesterov=False,
         adjust_lr=True,
         ns_steps=6,
+        orthogonalization="ns",
+        adamw_betas=(args.beta1, args.beta2),
+        adamw_eps=args.eps,
+    )
+    split = {}
+    for group in optimizer.param_groups:
+        update_type = group["update_type"]
+        split[update_type] = split.get(update_type, 0) + sum(
+            parameter.numel() for parameter in group["params"]
+        )
+    return optimizer, split
+
+
+def build_dense_muon_optimizer(args, model):
+    groups = parameter_groups(model, args.weight_decay)
+    metadata = {
+        parameter: (float(group["weight_decay"]), bool(group.get("is_proj_params", False)))
+        for group in groups
+        for parameter in group["params"]
+    }
+    muon_params = []
+    adamw_by_weight_decay = {}
+    for name, parameter in model.named_parameters():
+        weight_decay, is_projection = metadata[parameter]
+        if is_projection:
+            muon_params.append((name, parameter))
+        else:
+            adamw_by_weight_decay.setdefault(weight_decay, []).append(parameter)
+
+    optimizer = TensorionOptimizer(
+        tensorion_params=[],
+        muon_params=muon_params,
+        adamw_param_groups=[
+            {"params": params, "weight_decay": weight_decay}
+            for weight_decay, params in adamw_by_weight_decay.items()
+        ],
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        momentum=args.momentum,
+        nesterov=True,
+        adjust_lr=True,
+        ns_steps=5,
         orthogonalization="ns",
         adamw_betas=(args.beta1, args.beta2),
         adamw_eps=args.eps,
@@ -213,6 +256,9 @@ def build_model_and_optimizer(args, device: torch.device):
             fused=True,
         )
         split = {"adamw": sum(parameter.numel() for parameter in model.parameters())}
+        post_step = None
+    elif args.variant == "dense_muon":
+        optimizer, split = build_dense_muon_optimizer(args, model)
         post_step = None
     else:
         optimizer, split = build_tucker_optimizer(args, model)
@@ -305,6 +351,9 @@ def timed_step(model, optimizer, post_step, batches, stream, grad_clip: float) -
         "gpu_total_ms": total_start.elapsed_time(total_end),
         "forward_ms": sum(start.elapsed_time(end) for start, end in forward_pairs),
         "backward_ms": sum(start.elapsed_time(end) for start, end in backward_pairs),
+        "forward_backward_ms": sum(
+            start.elapsed_time(end) for start, end in (*forward_pairs, *backward_pairs)
+        ),
         "grad_clip_ms": clip_start.elapsed_time(clip_end),
         "optimizer_ms": optimizer_start.elapsed_time(optimizer_end),
         "loss": sum(float(loss.float()) for loss in losses),
@@ -316,9 +365,11 @@ METRICS = (
     "gpu_total_ms",
     "forward_ms",
     "backward_ms",
+    "forward_backward_ms",
     "grad_clip_ms",
     "optimizer_ms",
     "tokens_per_second",
+    "tokens_per_second_forward_backward",
 )
 
 
@@ -380,6 +431,9 @@ def run(args) -> dict:
             raise RuntimeError(f"non-finite measured loss at {iteration}: {sample['loss']}")
         sample["iteration"] = iteration
         sample["tokens_per_second"] = tokens_per_step / (sample["host_total_ms"] / 1000.0)
+        sample["tokens_per_second_forward_backward"] = tokens_per_step / (
+            sample["forward_backward_ms"] / 1000.0
+        )
         samples.append(sample)
 
     memory = {
@@ -410,6 +464,7 @@ def run(args) -> dict:
             **requested_controls(args, args.microbatch, args.accumulation_steps),
             "optimizer_backend": (
                 "TensorionOptimizer" if args.variant == "static_tucker"
+                else "TensorionOptimizer/Muon" if args.variant == "dense_muon"
                 else "torch.optim.AdamW"
             ),
             "adamw_fused": args.variant == "dense_adamw",
@@ -485,6 +540,8 @@ def main():
                     "microbatch": args.microbatch,
                     "median_ms": payload["summary"]["host_total_ms"]["median"],
                     "tokens_per_second": payload["summary"]["tokens_per_second"]["median"],
+                    "forward_backward_ms": payload["summary"]["forward_backward_ms"]["median"],
+                    "optimizer_ms": payload["summary"]["optimizer_ms"]["median"],
                     "peak_gb": payload["memory"]["peak_allocated_bytes"] / 1e9,
                 },
                 sort_keys=True,

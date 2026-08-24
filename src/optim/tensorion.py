@@ -300,6 +300,7 @@ class TensorionOptimizer(torch.optim.Optimizer):
         tucker_lr_scaling_exact_svd_debug: bool = False,
         tucker_lr_scaling_log_interval: int = 100,
         tucker_riemannian_muon_post_ns_project: bool = False,
+        parallel_tucker_components: bool = False,
         lr: float = 1e-3,
         weight_decay: float = 0.1,
         momentum: float = 0.95,
@@ -434,6 +435,8 @@ class TensorionOptimizer(torch.optim.Optimizer):
         self.tucker_riemannian_muon_post_ns_project = bool(
             tucker_riemannian_muon_post_ns_project
         )
+        self.parallel_tucker_components = bool(parallel_tucker_components)
+        self._tucker_component_streams = {}
         self._tucker_scaling_step = 0
         self._last_tucker_lr_scaling_metrics: dict[str, float] = {}
         self._stiefel_actual_norm_parameters: set[torch.nn.Parameter] = set()
@@ -647,6 +650,56 @@ class TensorionOptimizer(torch.optim.Optimizer):
             direction = direction.mul(self._direction_scale(plan))
         return direction
 
+    def _scaled_tucker_directions(
+        self,
+        spec: TuckerCoupledSpec,
+        *,
+        apply_shape_scale: bool = True,
+    ) -> tuple[torch.Tensor, ...]:
+        if not self.parallel_tucker_components or not spec.core.is_cuda:
+            return (
+                self._scaled_core_direction(
+                    spec.core,
+                    apply_shape_scale=apply_shape_scale,
+                ),
+                *(
+                    self._scaled_factor_direction(
+                        factor,
+                        apply_shape_scale=apply_shape_scale,
+                    )
+                    for factor in spec.factors
+                ),
+            )
+
+        device = spec.core.device
+        streams = self._tucker_component_streams.get(device)
+        if streams is None:
+            streams = tuple(torch.cuda.Stream(device=device) for _ in range(5))
+            self._tucker_component_streams[device] = streams
+        current_stream = torch.cuda.current_stream(device)
+        for stream in streams:
+            stream.wait_stream(current_stream)
+
+        directions = []
+        for index, stream in enumerate(streams):
+            with torch.cuda.stream(stream):
+                if index == 0:
+                    direction = self._scaled_core_direction(
+                        spec.core,
+                        apply_shape_scale=apply_shape_scale,
+                    )
+                else:
+                    direction = self._scaled_factor_direction(
+                        spec.factors[index - 1],
+                        apply_shape_scale=apply_shape_scale,
+                    )
+                directions.append(direction)
+
+        for stream, direction in zip(streams, directions):
+            current_stream.wait_stream(stream)
+            direction.record_stream(current_stream)
+        return tuple(directions)
+
     @staticmethod
     def _stiefel_orthogonality_error(parameter: torch.Tensor) -> torch.Tensor:
         work = parameter.detach().to(dtype=torch.float32)
@@ -747,7 +800,7 @@ class TensorionOptimizer(torch.optim.Optimizer):
                     [factor.detach().clone() for factor in spec.factors],
                 )
 
-            core_direction = self._scaled_core_direction(spec.core)
+            core_direction, *factor_directions = self._scaled_tucker_directions(spec)
             # In scaled modes the four Stiefel factors receive no normal-space
             # decay.  Include layer weight decay once in the core direction so
             # it is covered by the same reconstructed-weight spectral budget.
@@ -757,10 +810,6 @@ class TensorionOptimizer(torch.optim.Optimizer):
                     spec.core,
                     alpha=core_weight_decay,
                 )
-            factor_directions = [
-                self._scaled_factor_direction(factor) for factor in spec.factors
-            ]
-
             core_sigma = warm_started_spectral_norm(
                 spec.core,
                 self.state[spec.core],
@@ -941,18 +990,9 @@ class TensorionOptimizer(torch.optim.Optimizer):
                     for factor in spec.factors
                 ),
             )
-            directions = (
-                self._scaled_core_direction(
-                    spec.core,
-                    apply_shape_scale=not functional_mode,
-                ),
-                *(
-                    self._scaled_factor_direction(
-                        factor,
-                        apply_shape_scale=not functional_mode,
-                    )
-                    for factor in spec.factors
-                ),
+            directions = self._scaled_tucker_directions(
+                spec,
+                apply_shape_scale=not functional_mode,
             )
             raw_multipliers = tucker_paper_mup_lr_multipliers(
                 spec.core,

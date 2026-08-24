@@ -10,6 +10,7 @@ from pathlib import Path
 
 VARIANTS = (
     {"name": "dense_adamw", "label": "Dense AdamW", "parameters": 257_188_864},
+    {"name": "dense_muon", "label": "Dense Muon", "parameters": 257_188_864},
     {
         "name": "static_tucker",
         "label": "Static Tucker + Tensorion",
@@ -20,7 +21,7 @@ VARIANTS = (
 MICROBATCHES = (1, 2, 4, 8, 16)
 DEFAULT_SEQUENCE_LENGTH = 1024
 DEFAULT_TOKENS_PER_STEP = 16_384
-HARNESS_REVISION = 1
+HARNESS_REVISION = 2
 
 
 def variant_spec(name: str) -> dict:
@@ -60,8 +61,10 @@ def requested_controls(args, microbatch: int, accumulation: int) -> dict:
         "exclusive_gpu": args.exclusive_gpu,
         "tucker_rank": 259,
         "tucker_forward_mode": "contract",
+        "static_tucker_component_execution": "five_cuda_streams",
         "tucker_lr_scaling_mode": "first_order_calibrated",
         "tensorion_ns_steps": 6,
+        "dense_muon_ns_steps": 5,
         "tucker_vector_transport": True,
     }
 

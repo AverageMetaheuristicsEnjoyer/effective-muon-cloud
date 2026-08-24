@@ -1,16 +1,18 @@
 # Static Tucker 257M train-step benchmark
 
 This benchmark measures the non-progressive Tucker pretrain configuration from
-`scripts/launch_tucker257_firstorder_calibrated_no_postns_project.sh` against a
-dense 257M AdamW control. Every Tucker layer is forced through factorized
-contractions; materializing an effective dense weight is forbidden and aborts
-the benchmark.
+`scripts/launch_tucker257_firstorder_calibrated_no_postns_project.sh` against
+dense 257M AdamW and Muon controls. Every Tucker layer is forced through
+factorized contractions; materializing an effective dense weight is forbidden
+and aborts the benchmark.
 
-Both variants use the same 12-layer, width-1024 Llama and preallocated random
+All variants use the same 12-layer, width-1024 Llama and preallocated random
 tokens. Data loading, evaluation, checkpointing and W&B are excluded. A sample
 contains gradient accumulation, forward, backward, gradient clipping, optimizer
 step and zeroing. The Tucker optimizer slice also includes QR retraction and
-optimizer-state vector transport.
+optimizer-state vector transport. Forward, backward and their sum are reported
+separately from the optimizer. The Tucker core and four factor directions are
+computed on five CUDA streams before the coupled LR scaling.
 
 The default sweep matches the existing `monarch_benchmark` capacity protocol:
 sequence length 1024, 16,384 tokens per optimizer step, microbatch 1/2/4/8/16,
