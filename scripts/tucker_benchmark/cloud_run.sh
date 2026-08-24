@@ -53,13 +53,14 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
     echo "commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "python: $(python -V 2>&1)"
     export PYTHONPATH=.:src
+    PYTHON_DEPS=/workspace-SR006.nfs3/tucker-membench/python
+    export PYTHONPATH="$PYTHON_DEPS:$PYTHONPATH"
     if ! python -c "import tiktoken" 2>/dev/null; then
-        mkdir -p "$RESULTS/python"
-        pip install --target "$RESULTS/python" -q tiktoken
-        export PYTHONPATH="$RESULTS/python:$PYTHONPATH"
+        mkdir -p "$PYTHON_DEPS"
+        pip install --target "$PYTHON_DEPS" -q tiktoken
     fi
     if [ "${1:-}" = "selftest" ]; then
-        python -m unittest tests.test_tucker_benchmark
+        python -m unittest discover -s tests -p test_tucker_benchmark.py
     else
         python -m scripts.tucker_benchmark.run_sweep \
             --output-dir "$RESULTS/results" \
