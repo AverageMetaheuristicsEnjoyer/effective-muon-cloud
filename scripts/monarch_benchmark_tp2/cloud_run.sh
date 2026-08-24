@@ -47,6 +47,53 @@ if [ "${1:-}" = "peek" ]; then
     exit 0
 fi
 
+if [ "${1:-}" = "export" ]; then
+    # NCCL_DEBUG=INFO floods the job log, so the numbers leave as one compact
+    # line per variant rather than as their JSON payloads.
+    python3 - "$workspace/results/monarch_tp2" <<'JSON'
+import json
+import sys
+from pathlib import Path
+
+COLUMNS = ("run", "variant", "step_ms", "forward_ms", "backward_ms", "optimizer_ms",
+           "newton_schulz_ms", "activation_nccl_ms", "optimizer_nccl_ms",
+           "activation_nccl_mb", "optimizer_nccl_mb", "peak_gb", "validation_err")
+
+print("PT\t" + "\t".join(COLUMNS))
+for path in sorted(Path(sys.argv[1]).glob("*/*.json")):
+    payload = json.loads(path.read_text())
+    median = payload["median"]
+    error = payload.get("validation_max_abs_error")
+    print("PT\t" + "\t".join([
+        path.parent.name,
+        payload["variant"],
+        f"{median['step_ms']:.3f}",
+        f"{median['forward_ms']:.3f}",
+        f"{median['backward_ms']:.3f}",
+        f"{median['optimizer_ms']:.3f}",
+        f"{median['newton_schulz_ms']:.3f}",
+        f"{median['activation_nccl_ms']:.3f}",
+        f"{median['optimizer_nccl_ms']:.3f}",
+        f"{median['activation_nccl_bytes'] / 1e6:.1f}",
+        f"{median['optimizer_nccl_bytes'] / 1e6:.1f}",
+        f"{median['peak_allocated_bytes'] / 1e9:.3f}",
+        "" if error is None else f"{error:.2e}",
+    ]))
+    for key, entry in payload["collective_breakdown"].items():
+        print(f"CB\t{payload['variant']}\t{key}\t{entry['calls']}\t"
+              f"{entry['bytes']}\t{entry['ms']:.3f}")
+JSON
+    exit 0
+fi
+
+# --gpus 2 runs this entry point once per MPI rank on the same two-GPU node.
+# Every rank but the first has to stand down, or each one launches its own
+# torchrun and the two copies fight over the same pair of cards until OOM.
+if [ "${OMPI_COMM_WORLD_RANK:-0}" != "0" ]; then
+    echo "MPI rank ${OMPI_COMM_WORLD_RANK} stands down; rank 0 drives torchrun."
+    exit 0
+fi
+
 LOG="$workspace/logs/$(date +%F_%H%M%S)-$$.log"
 
 {
