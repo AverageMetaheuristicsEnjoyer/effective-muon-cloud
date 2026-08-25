@@ -1,0 +1,11 @@
+name: huawei-stage2
+channels:
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  # Full CUDA toolkit (provides nvcc). This version decides the wheel slot
+  # setup.sh picks from `nvcc --version` (12.8 -> cu128). Supported slots are
+  # 12.6 / 12.8 / 13.
+  - cuda-toolkit=12.8
+  - pip

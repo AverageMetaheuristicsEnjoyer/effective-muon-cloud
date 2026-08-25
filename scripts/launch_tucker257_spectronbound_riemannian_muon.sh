@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BASE_LAUNCHER="${SCRIPT_DIR}/single_gpu/tucker_transformer/fineweb_standard_attention_tensorion_muon_adamw_tucker_retract_1x_chinchilla_wd002.sh"
+
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"llama257m_tucker_r259_tensorion_riemannian_muon_spectronbound_pi1_adamw_ns6_vector_transport_densehead_retract_1x_chinchilla_wd01_bestval_evalbs16"}
+export TARGET_PARAMETER_COUNT=${TARGET_PARAMETER_COUNT:-257676352}
+export TARGET_PARAMETER_TOLERANCE=${TARGET_PARAMETER_TOLERANCE:-12312}
+export TUCKER_RANKS=${TUCKER_RANKS:-""}
+export TUCKER_VECTOR_TRANSPORT=1
+export TUCKER_RIEMANNIAN_MUON=1
+export TUCKER_DENSE_ADAMW_MATRICES=1
+export TUCKER_LR_SCALING_MODE=spectron_bound
+export TUCKER_LR_SCALING_EPS=${TUCKER_LR_SCALING_EPS:-1e-8}
+export TUCKER_LR_SCALING_POWER_ITERS=${TUCKER_LR_SCALING_POWER_ITERS:-1}
+export TUCKER_LR_SCALING_USE_STIEFEL_UNIT_NORM=1
+export TUCKER_LR_SCALING_STIEFEL_DRIFT_THRESHOLD=${TUCKER_LR_SCALING_STIEFEL_DRIFT_THRESHOLD:-1e-3}
+export TUCKER_LR_SCALING_STRICT_BOUND_CHECK=0
+export TUCKER_LR_SCALING_EXACT_SVD_DEBUG=0
+export TUCKER_LR_SCALING_LOG_INTERVAL=${TUCKER_LR_SCALING_LOG_INTERVAL:-100}
+export WEIGHT_DECAY=0.1
+export WEIGHT_DECAY_TAG=wd01
+export SAVE_BEST_VAL_CHECKPOINT=1
+export LATEST_CKPT_INTERVAL=0
+export EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-16}
+
+exec bash "${BASE_LAUNCHER}"

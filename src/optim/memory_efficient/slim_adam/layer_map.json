@@ -1,0 +1,8 @@
+{
+  "token_embedding": ["transformer.wte"],
+  "lm_head":         ["lm_head"],
+  "attention_output": ["attn.c_proj"],
+  "mlp_up":          ["mlp.w12"],
+  "mlp_down":        ["mlp.c_proj"],
+  "norm":            ["ln_1", "ln_2", "ln_f"]
+}

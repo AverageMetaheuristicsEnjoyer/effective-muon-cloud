@@ -1,0 +1,25 @@
+# Tokenization / data
+tiktoken
+transformers>=4.45.2
+datasets
+torchdata
+pyarrow
+huggingface_hub
+zstandard
+
+# Training utilities
+tqdm
+schedulefree
+scipy
+ai2-olmo-eval==0.8.5
+
+# Logging
+wandb
+
+# part of muon-lite; could be remove in the future
+loguru
+
+bitsandbytes
+
+# Optional at runtime; enabled by --liger-kernels for fused LLM training ops.
+liger-kernel==0.8.1
