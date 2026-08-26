@@ -376,6 +376,10 @@ class Llama(GPTBase):
             self.quantize_input  = Coat_quantize_bgn(qargs)
             self.quantize_output = Coat_quantize_end(qargs)
 
+    @torch.compiler.disable
+    def _liger_fused_linear_ce(self, head_weight, fused_input, targets):
+        return self._fused_linear_ce(head_weight, fused_input, targets)
+
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
@@ -455,7 +459,7 @@ class Llama(GPTBase):
                 fused_input = x.reshape(-1, x.size(-1)).to(
                     dtype=head_weight.dtype
                 )
-                loss = self._fused_linear_ce(
+                loss = self._liger_fused_linear_ce(
                     head_weight,
                     fused_input,
                     targets.reshape(-1),
