@@ -76,13 +76,14 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
         pip install --target "$PYTHON_DEPS" -q --no-deps \
             tiktoken loguru liger-kernel==0.8.1
     fi
-    if [ "${1:-}" = "selftest" ]; then
-        python -m unittest discover -s tests -p test_tucker_benchmark.py
-    elif [ "${1:-}" = "correctness" ]; then
+
+    run_correctness() {
         python experiments/fused_persistent_tucker/custom_backward/test_correctness.py && \
             python experiments/fused_persistent_tucker/custom_backward/test_parallel_muon.py && \
             python experiments/fused_persistent_tucker/custom_backward/test_grouped_retraction.py
-    elif [ "${1:-}" = "autotune" ]; then
+    }
+
+    run_autotune() {
         python -m scripts.tucker_benchmark.run_sweep \
             --output-dir "$RESULTS/autotune-streams-1" \
             --models 257m --variants tucker_parallel --microbatches 16 \
@@ -95,6 +96,39 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
             --output-dir "$RESULTS/autotune-streams-4" \
             --models 257m --variants tucker_parallel --microbatches 16 \
             --warmup-steps 3 --measured-steps 12 --tucker-muon-streams 4
+    }
+
+    if [ "${1:-}" = "selftest" ]; then
+        python -m unittest discover -s tests -p test_tucker_benchmark.py
+    elif [ "${1:-}" = "correctness" ]; then
+        run_correctness
+    elif [ "${1:-}" = "autotune" ]; then
+        run_autotune
+    elif [ "${1:-}" = "pipeline" ]; then
+        run_correctness && run_autotune
+        pipeline_status=$?
+        if [ "$pipeline_status" -eq 0 ]; then
+            best_streams=$(python - "$RESULTS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+scores = {}
+for streams in (1, 2, 4):
+    path = root / f"autotune-streams-{streams}/runs/257m-tucker_parallel-bs16.json"
+    payload = json.loads(path.read_text())
+    scores[streams] = payload["summary"]["optimizer_ms"]["median"]
+print(min(scores, key=scores.get))
+PY
+            )
+            echo "selected H100 Muon streams: $best_streams"
+            python -m scripts.tucker_benchmark.run_sweep \
+                --output-dir "$RESULTS/results" \
+                --tucker-muon-streams "$best_streams"
+        else
+            (exit "$pipeline_status")
+        fi
     else
         python -m scripts.tucker_benchmark.run_sweep \
             --output-dir "$RESULTS/results" \
