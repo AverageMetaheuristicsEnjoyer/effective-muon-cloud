@@ -1,0 +1,7 @@
+implementation,parameters,dense_lm_head,median_ms,peak_allocated_mib,measurement
+dense_reference,257188864,true,236.500,8407.8,historical_clean_control
+tucker_direct,257676352,true,548.857,8550.0,interleaved_30
+previous_fused,257676352,true,416.440,8752.8,interleaved_30
+custom_persistent,257676352,true,369.107,8501.8,interleaved_30
+custom_hybrid_gate_up,257676352,true,370.320,8343.4,interleaved_30
+custom_recast,257676352,true,370.897,8211.0,interleaved_30

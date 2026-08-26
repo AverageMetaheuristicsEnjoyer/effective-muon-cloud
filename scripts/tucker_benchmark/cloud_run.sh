@@ -2,7 +2,7 @@
 # Cloud.ru mlsub entry point. It keeps logs and results on the persistent nfs3 volume.
 set -u
 
-RESULTS=${TUCKER_BENCH_RESULTS:-/workspace-SR006.nfs3/tucker-scale-rank8-membench-20260826}
+RESULTS=${TUCKER_BENCH_RESULTS:-/workspace-SR006.nfs3/tucker-parallel-rank8-scale-20260826}
 mkdir -p "$RESULTS/logs" "$RESULTS/results"
 
 if [ "${1:-}" = "peek" ]; then
@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-print("model\tvariant\tparameters\tdifference_from_dense\tmicrobatch\tstatus\tmedian_ms\tforward_ms\tbackward_ms\tforward_backward_ms\tforward_backward_tokens_per_second\toptimizer_ms\tpeak_gb\tstate_gb\tmodel_gb\tgrad_clip_ms\tgpu")
+print("model\tvariant\tparameters\tdifference_from_dense\tmicrobatch\tstatus\tmedian_ms\tforward_ms\tbackward_ms\tforward_backward_ms\tforward_backward_tokens_per_second\toptimizer_ms\tretraction_ms\tforward_backward_peak_gb\tfull_peak_gb\treserved_gb\tstate_gb\tmodel_gb\tgrad_clip_ms\tstate_dtypes\tgpu")
 for path in sorted(Path(sys.argv[1]).glob("*.json")):
     payload = json.loads(path.read_text())
     status = payload.get("status")
@@ -42,10 +42,14 @@ for path in sorted(Path(sys.argv[1]).glob("*.json")):
         round(summary["forward_backward_ms"]["median"], 3),
         round(summary["tokens_per_second_forward_backward"]["median"], 1),
         round(summary["optimizer_ms"]["median"], 3),
+        round(summary["retraction_ms"]["median"], 3),
+        round(memory["forward_backward_peak_allocated_bytes"] / 1e9, 3),
         round(memory["peak_allocated_bytes"] / 1e9, 3),
+        round(memory["peak_reserved_bytes"] / 1e9, 3),
         round(memory["optimizer_state_bytes"] / 1e9, 3),
         round(memory["model_bytes"] / 1e9, 3),
         round(summary["grad_clip_ms"]["median"], 3),
+        ",".join(memory["optimizer_state_dtypes"]),
         payload["gpu"]["name"],
     ))))
 PY
@@ -59,12 +63,24 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
     export PYTHONPATH=.:src
     PYTHON_DEPS=/workspace-SR006.nfs3/tucker-membench/python
     export PYTHONPATH="$PYTHON_DEPS:$PYTHONPATH"
-    if ! python -c "import tiktoken" 2>/dev/null; then
+    if ! python -c "import tiktoken, loguru, liger_kernel" 2>/dev/null; then
         mkdir -p "$PYTHON_DEPS"
-        pip install --target "$PYTHON_DEPS" -q tiktoken
+        pip install --target "$PYTHON_DEPS" -q tiktoken loguru liger-kernel==0.8.1
     fi
     if [ "${1:-}" = "selftest" ]; then
         python -m unittest discover -s tests -p test_tucker_benchmark.py
+    elif [ "${1:-}" = "correctness" ]; then
+        python experiments/fused_persistent_tucker/custom_backward/test_correctness.py
+        python experiments/fused_persistent_tucker/custom_backward/test_parallel_muon.py
+        python experiments/fused_persistent_tucker/custom_backward/test_grouped_retraction.py
+    elif [ "${1:-}" = "autotune" ]; then
+        for streams in 1 2 4; do
+            python -m scripts.tucker_benchmark.run_sweep \
+                --output-dir "$RESULTS/autotune-streams-$streams" \
+                --models 257m --variants tucker_parallel --microbatches 16 \
+                --warmup-steps 3 --measured-steps 12 \
+                --tucker-muon-streams "$streams"
+        done
     else
         python -m scripts.tucker_benchmark.run_sweep \
             --output-dir "$RESULTS/results" \

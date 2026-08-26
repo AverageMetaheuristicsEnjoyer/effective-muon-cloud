@@ -1,0 +1,16 @@
+
+Tucker Linear replacement:
+  modules: 84
+  total parameters: 257,188,864 -> 257,676,352
+  validation target: 257,676,352; difference=+0; tolerance=±12,312
+  Tucker/residual weight parameters: 154,628,160 / 0
+  residual 2-D/1-D split: 0 / 0
+  resolved forward modes: {'chunked_contract': 84}
+  48x 1024->1024: ranks=(32, 32, 32, 32), residual=0 (0.00%)
+  24x 1024->2816: ranks=(32, 32, 44, 64), residual=0 (0.00%)
+  12x 2816->1024: ranks=(44, 64, 32, 32), residual=0 (0.00%)
+parameters=257676352 tucker_modules=84 dense_lm_head=True batch=16 sequence=1024
+variant=reference median_ms=535.971 p10_ms=535.428 p90_ms=539.002 all_ms=535.220,538.794,535.739,535.971,539.141 peak_allocated_mib=8550.0 peak_reserved_mib=9068.0 loss=11.02785492
+variant=existing_fused median_ms=409.088 p10_ms=407.661 p90_ms=409.915 all_ms=409.118,408.197,407.305,410.446,409.088 peak_allocated_mib=8752.8 peak_reserved_mib=9068.0 loss=11.02781200
+variant=custom_persistent median_ms=365.856 p10_ms=362.244 p90_ms=369.060 all_ms=365.856,367.067,370.389,362.176,362.346 peak_allocated_mib=8501.8 peak_reserved_mib=9068.0 loss=11.02781200
+variant=custom_recast median_ms=366.359 p10_ms=363.863 p90_ms=370.139 all_ms=364.092,372.428,366.704,363.710,366.359 peak_allocated_mib=8211.0 peak_reserved_mib=9068.0 loss=11.02781200

@@ -13,7 +13,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from models.tucker_linear import (
-    BlockTermTuckerLinear,
     TuckerLinear,
     auto_tucker_ranks,
     balanced_factor_pair,
@@ -27,165 +26,6 @@ from optim.tensorion import TensorionOptimizer
 
 
 class TuckerLinearTest(unittest.TestCase):
-    def test_block_term_forward_is_sum_of_independent_tucker_terms(self):
-        torch.manual_seed(5)
-        module = BlockTermTuckerLinear(
-            12,
-            18,
-            rank=2,
-            terms=4,
-            bias=True,
-            forward_mode="contract",
-            dtype=torch.float64,
-        )
-        inputs = torch.randn(3, 12, dtype=torch.float64)
-        expected = sum(
-            component._tucker_forward(inputs)
-            for component in module.components
-        ) + module.bias
-
-        actual = module(inputs)
-
-        torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
-        actual.square().mean().backward()
-        for component in module.components:
-            self.assertIsNotNone(component.core_matrix.grad)
-
-    def test_block_term_materialized_and_contracted_forwards_match(self):
-        torch.manual_seed(6)
-        module = BlockTermTuckerLinear(
-            12,
-            18,
-            rank=2,
-            terms=4,
-            bias=True,
-            forward_mode="contract",
-            dtype=torch.float64,
-        )
-        inputs = torch.randn(2, 5, 12, dtype=torch.float64)
-        contracted = module(inputs)
-        materialized = F.linear(
-            inputs,
-            module.materialize_weight(dtype=torch.float64),
-            module.bias,
-        )
-
-        torch.testing.assert_close(
-            contracted,
-            materialized,
-            rtol=1e-12,
-            atol=1e-12,
-        )
-
-        before = module.materialize_weight(dtype=torch.float64)
-        diagnostics = retract_tucker_modules_(module, compute_diagnostics=True)
-        after = module.materialize_weight(dtype=torch.float64)
-        self.assertEqual(diagnostics["modules"], 4)
-        self.assertEqual(diagnostics["factors"], 16)
-        torch.testing.assert_close(after, before, rtol=1e-10, atol=1e-10)
-
-    def test_btd4_rank17_matches_132m_parameter_target(self):
-        attention = BlockTermTuckerLinear(
-            1024,
-            1024,
-            rank=(17, 17, 17, 17),
-            terms=4,
-            bias=False,
-        )
-        gate_up = BlockTermTuckerLinear(
-            1024,
-            2816,
-            rank=(17, 17, 17, 17),
-            terms=4,
-            bias=False,
-        )
-        down = BlockTermTuckerLinear(
-            2816,
-            1024,
-            rank=(17, 17, 17, 17),
-            terms=4,
-            bias=False,
-        )
-
-        self.assertEqual(attention.tucker_parameter_count, 342_788)
-        self.assertEqual(gate_up.tucker_parameter_count, 345_780)
-        self.assertEqual(down.tucker_parameter_count, 345_780)
-        model_parameters = (
-            103_048_192
-            + 48 * attention.tucker_parameter_count
-            + 24 * gate_up.tucker_parameter_count
-            + 12 * down.tucker_parameter_count
-        )
-        self.assertEqual(model_parameters, 131_950_096)
-
-    def test_tensorion_steps_and_transports_all_block_terms(self):
-        torch.manual_seed(7)
-        module = BlockTermTuckerLinear(
-            12,
-            18,
-            rank=2,
-            terms=4,
-            bias=False,
-            forward_mode="contract",
-            dtype=torch.float64,
-        )
-        tensorion_params = []
-        riemannian_muon_params = []
-        tucker_specs = []
-        for index, component in enumerate(module.components):
-            r1, r2, r3, r4 = component.ranks
-            factors = (
-                component.U1,
-                component.U2,
-                component.U3,
-                component.U4,
-            )
-            tensorion_params.append(
-                (
-                    f"components.{index}.core_matrix",
-                    component.core_matrix,
-                    (r3, r4, r1, r2),
-                )
-            )
-            riemannian_muon_params.extend(
-                (
-                    f"components.{index}.U{mode}",
-                    factor,
-                )
-                for mode, factor in enumerate(factors, start=1)
-            )
-            tucker_specs.append(
-                (f"components.{index}", component.core_matrix, factors)
-            )
-        optimizer = TensorionOptimizer(
-            tensorion_params=tensorion_params,
-            riemannian_muon_params=riemannian_muon_params,
-            adamw_param_groups=[],
-            tucker_module_specs=tucker_specs,
-            tucker_lr_scaling_mode="first_order_calibrated",
-            tucker_lr_scaling_post_ns_project=False,
-            lr=1e-3,
-            momentum=0.95,
-            adjust_lr=True,
-            ns_steps=2,
-        )
-
-        inputs = torch.randn(4, 12, dtype=torch.float64)
-        module(inputs).square().mean().backward()
-        optimizer.step()
-        diagnostics = retract_tucker_modules_(
-            module,
-            optimizer=optimizer,
-            transport_optimizer_state=True,
-            compute_diagnostics=True,
-        )
-
-        self.assertEqual(diagnostics["transported_cores"], 4)
-        self.assertEqual(diagnostics["transported_factors"], 16)
-        self.assertTrue(
-            module.materialize_weight(dtype=torch.float64).isfinite().all()
-        )
-
     def test_balanced_factor_pairs_are_exact(self):
         for value, expected in (
             (1024, (32, 32)),
@@ -198,12 +38,6 @@ class TuckerLinearTest(unittest.TestCase):
                 pair = balanced_factor_pair(value)
                 self.assertEqual(pair, expected)
                 self.assertEqual(pair[0] * pair[1], value)
-
-    def test_balanced_factor_pairs_can_align_modes(self):
-        self.assertEqual(balanced_factor_pair(2816, 8), (32, 88))
-        self.assertEqual(balanced_factor_pair(11008, 8), (32, 344))
-        with self.assertRaisesRegex(ValueError, "no exact factor pair"):
-            balanced_factor_pair(1023, 8)
 
     def test_auto_ranks_for_experiment_shapes(self):
         expected = {
@@ -630,6 +464,9 @@ class TuckerLinearTest(unittest.TestCase):
             tucker_rank="auto",
             tucker_ranks=None,
             tucker_equal_params=True,
+            tucker_forward_mode="chunked_contract",
+            tucker_contract_chunk_size=17,
+            tucker_head_contract_chunk_size=5,
             fp8=False,
         )
         model = Llama(config)
@@ -641,6 +478,7 @@ class TuckerLinearTest(unittest.TestCase):
         self.assertEqual(stats.parameters_before, stats.parameters_after)
         self.assertFalse(any(isinstance(module, nn.Linear) for module in model.modules()))
         self.assertIsInstance(model.lm_head, TuckerLinear)
+        self.assertEqual(model.lm_head.contract_chunk_size, 5)
         block = model.transformer.h[0]
         for projection in (
             block.attn.q_proj,
@@ -652,6 +490,7 @@ class TuckerLinearTest(unittest.TestCase):
             block.mlp.down_proj,
         ):
             self.assertIsInstance(projection, TuckerLinear)
+            self.assertEqual(projection.contract_chunk_size, 17)
 
         tokens = torch.randint(0, config.vocab_size, (2, config.sequence_length))
         result = model(tokens, targets=tokens, get_logits=True)
@@ -710,63 +549,6 @@ class TuckerLinearTest(unittest.TestCase):
             before,
         )
         self.assertEqual(stats.modules, 7)
-
-    def test_btd_replacement_uses_four_terms_and_keeps_lm_head_dense(self):
-        from models.llama import Llama
-
-        config = SimpleNamespace(
-            model="llama",
-            vocab_size=32,
-            sequence_length=4,
-            batch_size=2,
-            n_embd=8,
-            n_head=1,
-            n_layer=1,
-            dropout=0.0,
-            bias=False,
-            init_std=0.02,
-            rmsnorm_eps=1e-5,
-            multiple_of=4,
-            ffn_hidden_size=16,
-            label_smoothing=0.0,
-            qkv_clipping=False,
-            qkv_clipping_factor=1.0,
-            attention_type="standard",
-            linear_parameterization="tucker",
-            tucker_rank="2",
-            tucker_ranks=None,
-            tucker_terms=4,
-            tucker_equal_params=False,
-            tucker_forward_mode="contract",
-            tucker_dense_adamw_matrices=True,
-            target_parameter_count=0,
-            target_parameter_tolerance=0,
-            fp8=False,
-            fp8_optim=False,
-        )
-        model = Llama(config)
-
-        stats = replace_all_linears_with_tucker(model, config)
-
-        self.assertEqual(stats.modules, 7)
-        self.assertEqual(stats.terms_per_module, 4)
-        self.assertIsInstance(model.lm_head, nn.Linear)
-        self.assertIsInstance(
-            model.transformer.h[0].attn.q_proj,
-            BlockTermTuckerLinear,
-        )
-        self.assertEqual(
-            len(model.transformer.h[0].attn.q_proj.components),
-            4,
-        )
-        tokens = torch.randint(0, config.vocab_size, (2, config.sequence_length))
-        result = model(tokens, targets=tokens, get_logits=True)
-        result["loss"].backward()
-        for component in model.transformer.h[0].attn.q_proj.components:
-            self.assertIsNotNone(component.core_matrix.grad)
-        grouped = model.get_parameter_group_specs()
-        grouped_names = set().union(*(set(group["params"]) for group in grouped))
-        self.assertEqual(grouped_names, set(dict(model.named_parameters())))
 
     def test_adaptive_flops_differ_from_parameter_count_formula(self):
         module = TuckerLinear(12, 18, rank=1, bias=False, equal_params=True)

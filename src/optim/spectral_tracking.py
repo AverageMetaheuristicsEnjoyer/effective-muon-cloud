@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import wandb
 
-from models.tucker_linear import BlockTermTuckerLinear, TuckerLinear
+from models.tucker_linear import TuckerLinear
 
 
 _EPS = 1e-12
@@ -89,7 +89,7 @@ def _effective_weight(
     Stable rank is deliberately computed on the reconstructed effective
     matrix, never averaged over Tucker factors or the core.
     """
-    if isinstance(module, (TuckerLinear, BlockTermTuckerLinear)):
+    if isinstance(module, TuckerLinear):
         try:
             return module.materialize_weight(
                 dtype=torch.float32,

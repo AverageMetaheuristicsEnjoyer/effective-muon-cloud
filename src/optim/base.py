@@ -376,6 +376,7 @@ def train(
         _mem_after_step_fwd  = []
         _mem_after_step_bwd  = []
         _mem_after_batch     = []
+        _mem_peak_step       = []
 
     _time_bench = os.environ.get("TIME_BENCH", "false") in ["1", "True", "true"]
     if _time_bench:
@@ -386,10 +387,6 @@ def train(
 
     while curr_iter <= cfg.iterations:
         if progressive_controller is not None:
-            # Release the previous iteration's autograd graph before any rank
-            # grows.  Its AccumulateGrad nodes pin the old factor shapes, so
-            # the next backward would validate the new gradients against them.
-            outputs = loss = None
             growth = progressive_controller.maybe_grow(curr_iter)
             if growth is not None:
                 # Parameter-based FLOP estimates are cached by the model.
@@ -644,6 +641,10 @@ def train(
                 if distributed_backend.is_master_process():
                     memory_usage = torch.cuda.memory_allocated() // 1024 ** 2
                     _mem_before_step_fwd.append(memory_usage)
+                    # Sampled allocations miss short-lived fused-kernel
+                    # workspaces. Reset here so max_memory_allocated captures
+                    # the true forward+backward peak of this microstep.
+                    torch.cuda.reset_peak_memory_stats()
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(
                     model=model,
@@ -682,6 +683,9 @@ def train(
                 if distributed_backend.is_master_process():
                     memory_usage = torch.cuda.memory_allocated() // 1024 ** 2
                     _mem_after_step_bwd.append(memory_usage)
+                    _mem_peak_step.append(
+                        torch.cuda.max_memory_allocated() // 1024 ** 2
+                    )
 
             # After first microbatch: subsequent microsteps reuse cached FP8 scales
             if _use_fp8 and microstep_idx == 0:
@@ -753,6 +757,7 @@ def train(
                 import math
                 n_fwd = len(_mem_after_step_fwd)  # = 10 * acc_steps
                 total_memory      = _mem_after_step_fwd[-1]
+                peak_step_memory  = max(_mem_peak_step)
                 model_memory      = _mem_before_batch[0]
                 activation_memory = _mem_after_step_fwd[0] - _mem_before_step_fwd[0]
                 optimizer_memory  = _mem_after_batch[1] - _mem_after_batch[0]
@@ -773,6 +778,7 @@ def train(
                     f"  Gradient Memory  : {gradient_memory:8.1f} MB  ({100*gradient_memory/total_memory:5.1f}%)\n"
                     f"  -----------------------------------\n"
                     f"  Total            : {total_memory:8.1f} MB\n"
+                    f"  Peak microstep   : {peak_step_memory:8.1f} MB\n"
                 )
                 exit(0)
 

@@ -93,42 +93,6 @@ class TuckerLearningRateScalingTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["tucker_lr_scaling/layer/paper_kappa_U3"], 1.2)
         self.assertAlmostEqual(metrics["tucker_lr_scaling/layer/paper_kappa_U4"], 1.2)
 
-    def test_scheduler_lr_survives_optimizer_state_reload(self):
-        core = torch.nn.Parameter(torch.zeros(1, 1, dtype=torch.float64))
-        factors = tuple(
-            torch.nn.Parameter(torch.ones(rows, 1, dtype=torch.float64))
-            for rows in (2, 3, 4, 5)
-        )
-        optimizer = TensorionOptimizer(
-            tensorion_params=[("core", core, (1, 1, 1, 1))],
-            riemannian_muon_params=[
-                (f"U{index}", factor) for index, factor in enumerate(factors, start=1)
-            ],
-            adamw_param_groups=[],
-            tucker_module_specs=[("layer", core, factors)],
-            tucker_lr_scaling_mode="first_order_calibrated",
-            tucker_lr_scaling_log_interval=1,
-            lr=1e-5,
-            weight_decay=0.0,
-            momentum=0.0,
-            adjust_lr=False,
-            orthogonalization="svd",
-        )
-
-        # A resume reloads the optimizer state and then lets the scheduler
-        # write the resumed learning rate into the parameter groups.
-        optimizer.load_state_dict(optimizer.state_dict())
-        for group in optimizer.param_groups:
-            group["lr"] = 1e-3
-
-        core.grad = torch.ones_like(core)
-        for factor in factors:
-            factor.grad = torch.ones_like(factor)
-        optimizer.step()
-
-        metrics = optimizer.last_tucker_lr_scaling_metrics
-        self.assertEqual(metrics["tucker_lr_scaling/layer/base_lr"], 1e-3)
-
     def test_three_factor_bound_controls_ugv_update(self):
         U = torch.randn(6, 3, dtype=torch.float64)
         G = torch.randn(3, 4, dtype=torch.float64)

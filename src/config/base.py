@@ -377,16 +377,6 @@ def parse_args(base_parser, args, namespace):
         ),
     )
     parser.add_argument(
-        "--tucker-terms",
-        default=1,
-        type=int,
-        help=(
-            "Number of independent Tucker terms summed in each replaced "
-            "Linear. Values above one enable Block Term Decomposition and "
-            "require --no-tucker-equal-params."
-        ),
-    )
-    parser.add_argument(
         "--tucker-attention-ranks",
         default=None,
         type=str,
@@ -460,11 +450,29 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument(
         "--tucker-forward-mode",
         default="auto",
-        choices=["auto", "contract", "materialize"],
+        choices=["auto", "contract", "materialize", "chunked_contract"],
         help=(
             "Tucker execution path. 'auto' uses dense effective-weight "
             "materialisation for large training batches to avoid enormous "
             "token-wise intermediates, and contractions for small inputs."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-contract-chunk-size",
+        default=16384,
+        type=int,
+        help=(
+            "Token chunk size for the memory-bounded chunked_contract path. "
+            "Smaller chunks use less workspace but launch more kernels."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-head-contract-chunk-size",
+        default=2048,
+        type=int,
+        help=(
+            "Separate token chunk size for the Tucker lm_head. Its vocabulary-"
+            "sized output needs a smaller workspace than internal projections."
         ),
     )
     parser.add_argument(
@@ -677,6 +685,23 @@ def parse_args(base_parser, args, namespace):
     )
     parser.add_argument("--bias", default=False, type=bool)
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument(
+        "--liger-kernels",
+        action="store_true",
+        help=(
+            "Use memory-efficient Triton RMSNorm, SwiGLU, and fused "
+            "lm_head+cross-entropy kernels. This preserves the model "
+            "parameters and requires a CUDA device plus liger-kernel."
+        ),
+    )
+    parser.add_argument(
+        "--activation-checkpointing",
+        action="store_true",
+        help=(
+            "Recompute transformer blocks during backward to reduce activation "
+            "memory. This is a memory-first option and normally increases step time."
+        ),
+    )
     parser.add_argument("--mlp-dim-exp-factor", default=1.0, type=float)
     parser.add_argument(
         "--ffn-hidden-size",

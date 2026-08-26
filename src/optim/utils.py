@@ -368,7 +368,6 @@ _ARCHITECTURE_CONFIG_KEYS = (
     "target_parameter_tolerance",
     "tucker_rank",
     "tucker_ranks",
-    "tucker_terms",
     "tucker_attention_ranks",
     "tucker_gate_up_ranks",
     "tucker_down_ranks",
@@ -417,7 +416,6 @@ def _architecture_metadata(model):
             "target_parameter_tolerance",
             "tucker_rank",
             "tucker_ranks",
-            "tucker_terms",
             "tucker_attention_ranks",
             "tucker_gate_up_ranks",
             "tucker_down_ranks",
@@ -526,8 +524,6 @@ def load_checkpoint(
                 saved_value = False
             if key == "tucker_lr_scaling_mode" and key not in saved_architecture:
                 saved_value = "none"
-            if key == "tucker_terms" and key not in saved_architecture:
-                saved_value = 1
             if (
                 key == "tucker_riemannian_muon_post_ns_project"
                 and key not in saved_architecture
@@ -557,7 +553,6 @@ def load_checkpoint(
                 continue
             if key in (
                 "tucker_ranks",
-                "tucker_terms",
                 "tucker_attention_ranks",
                 "tucker_gate_up_ranks",
                 "tucker_down_ranks",

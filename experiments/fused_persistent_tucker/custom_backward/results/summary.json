@@ -1,0 +1,88 @@
+{
+  "architecture": {
+    "parameters": 257676352,
+    "tucker_modules": 84,
+    "dense_lm_head": true,
+    "internal_dense_materialization": false,
+    "batch_size": 16,
+    "sequence_length": 1024,
+    "dtype": "bfloat16",
+    "gpu": "NVIDIA A100-PCIE-40GB"
+  },
+  "forward_backward": {
+    "dense_reference": {"median_ms": 236.5, "peak_allocated_mib": 8407.8},
+    "tucker_direct": {"median_ms": 548.857, "peak_allocated_mib": 8550.0},
+    "previous_fused": {"median_ms": 416.440, "peak_allocated_mib": 8752.8},
+    "custom_persistent": {"median_ms": 369.107, "peak_allocated_mib": 8501.8},
+    "custom_hybrid_gate_up": {"median_ms": 370.320, "peak_allocated_mib": 8343.4},
+    "custom_recast": {"median_ms": 370.897, "peak_allocated_mib": 8211.0}
+  },
+  "profile": {
+    "wall_ms": 375.619,
+    "tucker_backward_cuda_ms": 156.310,
+    "all_mm_cuda_ms": 146.555,
+    "copy_cuda_ms": 47.846,
+    "transposed_vjp_cuda_ms": 35.661,
+    "dense_liger_head_ce_cuda_ms": 61.728
+  },
+  "clean_muon_without_retraction": {
+    "forward_median_ms": 134.142,
+    "backward_median_ms": 223.082,
+    "clip_median_ms": 8.190,
+    "optimizer_median_ms": 452.696,
+    "full_median_ms": 818.107,
+    "peak_training_mib": 9725.466,
+    "optimizer_state_mib": 1376.055,
+    "bf16_work_cache_mib": 132.370,
+    "gradient_mib": 982.957
+  },
+  "grouped_optimizer_contended_30": {
+    "valid_for_absolute_throughput": false,
+    "reason": "foreign GPU utilization about 46 percent",
+    "ungrouped_optimizer_median_ms": 575.368,
+    "grouped_optimizer_median_ms": 401.487,
+    "grouped_small_factor_count": 336,
+    "peak_training_mib": 9727.966
+  },
+  "parallel_muon_autotune": {
+    "comparison": "same model, process and gradients; optimizer-only; 3 warmup + 10 measured",
+    "sequential_median_ms": 554.884,
+    "factor_only_grouped_median_ms": 506.221,
+    "selected_core_microbatch": 1,
+    "selected_worker_streams": 2,
+    "selected_median_ms": 269.267,
+    "selected_p10_ms": 263.915,
+    "selected_p90_ms": 274.840,
+    "selected_phase_peak_mib": 4270.021,
+    "grouped_core_count": 84,
+    "grouped_factor_count": 336,
+    "dense_lm_head_adamw_overlapped": true
+  },
+  "parallel_muon_full_contended_30": {
+    "valid_for_absolute_full_step_throughput": false,
+    "reason": "strong variable foreign load in forward/backward on shared A100",
+    "optimizer_median_ms": 262.651,
+    "optimizer_phase_peak_mib": 4369.146,
+    "global_training_peak_mib": 9770.716,
+    "grouped_qr_retraction_median_ms": 49.286,
+    "full_step_median_ms": 839.340,
+    "gradients_present_and_finite": true
+  },
+  "grouped_retraction_probe": {
+    "median_ms": 89.841,
+    "sequential_reference_median_ms": 160.600,
+    "phase_peak_mib": 4520.522,
+    "global_training_peak_mib": 9722.966
+  },
+  "correctness": {
+    "production_kernel_parity": true,
+    "all_gradients_present_and_finite": true,
+    "cache_invalidation": true,
+    "grouped_muon_three_step_parity": true,
+    "parallel_core_factor_muon_three_step_parity": true,
+    "concurrent_dense_head_adamw_three_step_parity": true,
+    "parallel_optimizer_checkpoint_resume": true,
+    "grouped_retraction_output_invariance": true,
+    "grouped_retraction_orthogonality": true
+  }
+}

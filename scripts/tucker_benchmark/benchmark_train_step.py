@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark one complete 257M dense or static-Tucker training step."""
+"""Benchmark one dense, reference-Tucker, or optimized-Tucker training step."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ import math
 import os
 import platform
 import sys
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -21,17 +22,24 @@ for item in (ROOT, ROOT / "src"):
     if str(item) not in sys.path:
         sys.path.insert(0, str(item))
 
-from models.tucker_linear import (  # noqa: E402
-    TuckerLinear,
-    retract_tucker_modules_,
+import models.tucker_linear as tucker_linear_module  # noqa: E402
+from experiments.fused_persistent_tucker.custom_backward.grouped_retraction import (  # noqa: E402
+    grouped_retract_tucker_modules_,
 )
+from experiments.fused_persistent_tucker.custom_backward.integration import (  # noqa: E402
+    install_custom_backward,
+)
+from experiments.fused_persistent_tucker.custom_backward.parallel_muon import (  # noqa: E402
+    ParallelGroupedMuonLite,
+)
+from models.tucker_linear import TuckerLinear, retract_tucker_modules_  # noqa: E402
 from models.utils import get_model  # noqa: E402
-from optim.tensorion import TensorionOptimizer, tucker_core_shape_overrides  # noqa: E402
 from scripts.tucker_benchmark.common import (  # noqa: E402
     DEFAULT_SEQUENCE_LENGTH,
     MODEL_SPECS,
     TUCKER_RANK_MULTIPLE,
     VARIANTS,
+    _aligned_factor_pair,
     atomic_write_json,
     model_geometry,
     requested_controls,
@@ -39,10 +47,14 @@ from scripts.tucker_benchmark.common import (  # noqa: E402
     tucker_rank_plan,
     variant_spec,
 )
+from third_party.lite.muonlite import MuonLite  # noqa: E402
+
+
+TUCKER_VARIANTS = {"tucker_reference", "tucker_parallel"}
 
 
 def make_config(args) -> SimpleNamespace:
-    static_tucker = args.variant == "static_tucker"
+    is_tucker = args.variant in TUCKER_VARIANTS
     geometry = model_geometry(args.model_size)
     rank_plan, tucker_parameters = tucker_rank_plan(args.model_size)
     return SimpleNamespace(
@@ -63,25 +75,29 @@ def make_config(args) -> SimpleNamespace:
         qkv_clipping=False,
         qkv_clipping_factor=1.0,
         attention_type="standard",
-        linear_parameterization="tucker" if static_tucker else "dense",
+        linear_parameterization="tucker" if is_tucker else "dense",
         tucker_rank="auto",
         tucker_ranks=None,
         tucker_attention_ranks=None,
         tucker_gate_up_ranks=None,
         tucker_down_ranks=None,
-        tucker_rank_plan=rank_plan if static_tucker else None,
+        tucker_rank_plan=rank_plan if is_tucker else None,
         tucker_mode_multiple=TUCKER_RANK_MULTIPLE,
         tucker_terms=1,
         tucker_equal_params=False,
-        tucker_forward_mode="contract",
-        tucker_dense_adamw_matrices=static_tucker,
-        tucker_retract_every_step=static_tucker,
-        tucker_vector_transport=static_tucker,
-        tucker_riemannian_muon=static_tucker,
+        tucker_forward_mode="chunked_contract",
+        tucker_contract_chunk_size=args.microbatch * args.sequence_length,
+        tucker_head_contract_chunk_size=args.microbatch * args.sequence_length,
+        tucker_dense_adamw_matrices=is_tucker,
+        tucker_retract_every_step=is_tucker,
+        tucker_vector_transport=False,
+        tucker_riemannian_muon=False,
         target_parameter_count=geometry["dense_parameters"],
-        target_parameter_tolerance=abs(
-            tucker_parameters - geometry["dense_parameters"]
-        ),
+        target_parameter_tolerance=abs(tucker_parameters - geometry["dense_parameters"]),
+        dtype="bfloat16",
+        device="cuda",
+        liger_kernels=True,
+        activation_checkpointing=False,
         fp8=False,
         fp8_optim=False,
         qargs=None,
@@ -89,14 +105,31 @@ def make_config(args) -> SimpleNamespace:
 
 
 def instantiate_model(config: SimpleNamespace, device: torch.device):
-    previous_dtype = torch.get_default_dtype()
+    config.device = str(device)
+    if device.type != "cuda":
+        config.liger_kernels = False
+    rank_plan = config.tucker_rank_plan
+    original_factor_pair = tucker_linear_module.balanced_factor_pair
     try:
-        torch.set_default_dtype(torch.bfloat16)
-        with torch.device(device):
-            model = get_model(config)
+        if rank_plan is not None:
+            tucker_linear_module.balanced_factor_pair = lambda value: _aligned_factor_pair(
+                value, TUCKER_RANK_MULTIPLE
+            )
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as handle:
+                json.dump({"module_ranks": rank_plan}, handle)
+                handle.flush()
+                config.tucker_rank_plan = handle.name
+                with torch.device(device):
+                    model = get_model(config)
+        else:
+            with torch.device(device):
+                model = get_model(config)
     finally:
-        torch.set_default_dtype(previous_dtype)
+        config.tucker_rank_plan = rank_plan
+        tucker_linear_module.balanced_factor_pair = original_factor_pair
     model.train()
+    if any(parameter.dtype != torch.float32 for parameter in model.parameters()):
+        raise RuntimeError("all model/master parameters must remain float32")
     return model
 
 
@@ -111,146 +144,70 @@ def parameter_groups(model, weight_decay: float) -> list[dict]:
     return groups
 
 
-def build_tucker_optimizer(args, model):
-    groups = parameter_groups(model, args.weight_decay)
-    metadata = {}
-    for group in groups:
-        for parameter in group["params"]:
-            metadata[parameter] = (
-                float(group["weight_decay"]),
-                bool(group.get("is_proj_params", False)),
-            )
-
-    factor_parameters = {
-        factor
-        for module in model.modules()
-        if isinstance(module, TuckerLinear)
-        for factor in (module.U1, module.U2, module.U3, module.U4)
-    }
-    logical_shapes = tucker_core_shape_overrides(model)
-    tensorion_params = []
-    riemannian_muon_params = []
-    adamw_by_weight_decay = {}
-
-    for name, parameter in model.named_parameters():
-        logical_shape = logical_shapes.get(parameter, tuple(parameter.shape))
-        parameter_weight_decay, is_projection = metadata[parameter]
-        eligible = is_projection and not any(
-            excluded in name
-            for excluded in ("wte", "wpe", "lm_head", "embed", "core_logits")
-        )
-        if eligible and len(logical_shape) >= 3:
-            tensorion_params.append((name, parameter, logical_shape))
-        elif eligible and len(logical_shape) == 2 and parameter.ndim == 2:
-            if parameter not in factor_parameters:
-                raise RuntimeError(f"unexpected non-factor matrix in Tucker model: {name}")
-            riemannian_muon_params.append((name, parameter))
-        else:
-            adamw_by_weight_decay.setdefault(parameter_weight_decay, []).append(parameter)
-
-    adamw_groups = [
-        {"params": params, "weight_decay": weight_decay}
-        for weight_decay, params in adamw_by_weight_decay.items()
-    ]
-    tucker_modules = [
-        (
-            name,
-            module.core_matrix,
-            (module.U1, module.U2, module.U3, module.U4),
-        )
-        for name, module in model.named_modules()
-        if isinstance(module, TuckerLinear)
-    ]
-    optimizer = TensorionOptimizer(
-        tensorion_params=tensorion_params,
-        adamw_param_groups=adamw_groups,
-        riemannian_muon_params=riemannian_muon_params,
-        tucker_module_specs=tucker_modules,
-        tucker_lr_scaling_mode="first_order_calibrated",
-        tucker_lr_scaling_eps=1e-8,
-        tucker_lr_scaling_power_iters=1,
-        tucker_lr_scaling_use_stiefel_unit_norm=True,
-        tucker_lr_scaling_post_ns_project=False,
-        tucker_lr_scaling_stiefel_drift_threshold=1e-3,
-        tucker_lr_scaling_strict_bound_check=False,
-        tucker_lr_scaling_exact_svd_debug=False,
-        tucker_lr_scaling_log_interval=100,
-        tucker_riemannian_muon_post_ns_project=False,
-        parallel_tucker_components=True,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        momentum=args.momentum,
-        nesterov=False,
-        adjust_lr=True,
-        ns_steps=6,
-        orthogonalization="ns",
-        adamw_betas=(args.beta1, args.beta2),
-        adamw_eps=args.eps,
-    )
-    split = {}
-    for group in optimizer.param_groups:
-        update_type = group["update_type"]
-        split[update_type] = split.get(update_type, 0) + sum(
-            parameter.numel() for parameter in group["params"]
-        )
-    return optimizer, split
-
-
-def build_dense_muon_optimizer(args, model):
-    groups = parameter_groups(model, args.weight_decay)
-    metadata = {
-        parameter: (float(group["weight_decay"]), bool(group.get("is_proj_params", False)))
-        for group in groups
-        for parameter in group["params"]
-    }
+def build_muon_optimizer(args, model, *, parallel: bool):
     muon_params = []
-    adamw_by_weight_decay = {}
+    adamw_params = []
     for name, parameter in model.named_parameters():
-        weight_decay, is_projection = metadata[parameter]
-        if is_projection:
+        if parameter.ndim == 2 and not any(
+            marker in name for marker in ("wte", "wpe", "lm_head", "embed", "core_logits")
+        ):
             muon_params.append((name, parameter))
         else:
-            adamw_by_weight_decay.setdefault(weight_decay, []).append(parameter)
+            adamw_params.append((name, parameter))
 
-    optimizer = TensorionOptimizer(
-        tensorion_params=[],
+    optimizer_class = ParallelGroupedMuonLite if parallel else MuonLite
+    kwargs = {}
+    if parallel:
+        kwargs.update(
+            core_microbatch=args.tucker_muon_core_microbatch,
+            parallel_streams=args.tucker_muon_streams,
+        )
+    optimizer = optimizer_class(
         muon_params=muon_params,
-        adamw_param_groups=[
-            {"params": params, "weight_decay": weight_decay}
-            for weight_decay, params in adamw_by_weight_decay.items()
-        ],
+        adamw_params=adamw_params,
         lr=args.lr,
         weight_decay=args.weight_decay,
-        momentum=args.momentum,
-        nesterov=True,
-        adjust_lr=True,
-        ns_steps=5,
-        orthogonalization="ns",
+        ns_steps=6,
+        muon_theta=args.momentum,
         adamw_betas=(args.beta1, args.beta2),
         adamw_eps=args.eps,
+        total_steps=1_000_000,
+        warmup_steps=0,
+        beta1=0.0,
+        beta2=0.0,
+        chi=1.0,
+        chi_adamw=1.0,
+        subspace_ratio=0.0,
+        **kwargs,
     )
-    split = {}
-    for group in optimizer.param_groups:
-        update_type = group["update_type"]
-        split[update_type] = split.get(update_type, 0) + sum(
-            parameter.numel() for parameter in group["params"]
-        )
+    split = {
+        "muon": sum(parameter.numel() for _, parameter in muon_params),
+        "adamw": sum(parameter.numel() for _, parameter in adamw_params),
+    }
+    if parallel:
+        split["parallel_cores"] = optimizer.grouped_core_count
+        split["parallel_factors"] = optimizer.grouped_factor_count
     return optimizer, split
 
 
 def build_model_and_optimizer(args, device: torch.device):
+    if args.variant == "tucker_parallel":
+        install_custom_backward(cache_policy=args.tucker_cache_policy)
     config = make_config(args)
     model = instantiate_model(config, device)
-    if args.variant == "static_tucker":
-        forward_modes = {
-            module.resolved_forward_mode
-            for module in model.modules()
-            if isinstance(module, TuckerLinear)
-        }
-        if forward_modes != {"contract"}:
+
+    if args.variant in TUCKER_VARIANTS:
+        modules = [module for module in model.modules() if isinstance(module, TuckerLinear)]
+        if len(modules) != config.n_layer * 7:
             raise RuntimeError(
-                f"static Tucker benchmark must not materialize weights: {forward_modes}"
+                f"expected {config.n_layer * 7} internal Tucker modules, got {len(modules)}"
             )
+        if not isinstance(model.lm_head, torch.nn.Linear):
+            raise RuntimeError("lm_head must remain dense nn.Linear")
+        forward_modes = {module.resolved_forward_mode for module in modules}
+        if forward_modes != {"chunked_contract"}:
+            raise RuntimeError(f"unexpected Tucker forward modes: {forward_modes}")
+
     if args.variant == "dense_adamw":
         groups = parameter_groups(model, args.weight_decay)
         for group in groups:
@@ -266,16 +223,26 @@ def build_model_and_optimizer(args, device: torch.device):
         split = {"adamw": sum(parameter.numel() for parameter in model.parameters())}
         post_step = None
     elif args.variant == "dense_muon":
-        optimizer, split = build_dense_muon_optimizer(args, model)
+        optimizer, split = build_muon_optimizer(args, model, parallel=False)
         post_step = None
-    else:
-        optimizer, split = build_tucker_optimizer(args, model)
+    elif args.variant == "tucker_reference":
+        optimizer, split = build_muon_optimizer(args, model, parallel=False)
 
         def post_step():
             retract_tucker_modules_(
                 model,
                 optimizer=optimizer,
-                transport_optimizer_state=True,
+                transport_optimizer_state=False,
+            )
+
+    else:
+        optimizer, split = build_muon_optimizer(args, model, parallel=True)
+
+        def post_step():
+            grouped_retract_tucker_modules_(
+                model,
+                optimizer=optimizer,
+                transport_optimizer_state=False,
             )
 
     return model, optimizer, post_step, split
@@ -312,7 +279,19 @@ def tensor_dtypes(value) -> set[str]:
     return result
 
 
-def timed_step(model, optimizer, post_step, batches, stream, grad_clip: float) -> dict:
+def timed_step(
+    model,
+    optimizer,
+    post_step,
+    batches,
+    stream,
+    grad_clip: float,
+    *,
+    capture_memory: bool = False,
+) -> dict:
+    device = batches[0][0].device
+    if capture_memory:
+        torch.cuda.reset_peak_memory_stats(device)
     total_start = torch.cuda.Event(enable_timing=True)
     total_end = torch.cuda.Event(enable_timing=True)
     forward_pairs = [
@@ -327,6 +306,8 @@ def timed_step(model, optimizer, post_step, batches, stream, grad_clip: float) -
     clip_end = torch.cuda.Event(enable_timing=True)
     optimizer_start = torch.cuda.Event(enable_timing=True)
     optimizer_end = torch.cuda.Event(enable_timing=True)
+    retraction_start = torch.cuda.Event(enable_timing=True)
+    retraction_end = torch.cuda.Event(enable_timing=True)
 
     host_start = time.perf_counter_ns()
     losses = []
@@ -341,19 +322,25 @@ def timed_step(model, optimizer, post_step, batches, stream, grad_clip: float) -
             loss.backward()
             backward_pairs[index][1].record(stream)
             losses.append(loss.detach())
+        forward_backward_peak_bytes = (
+            torch.cuda.max_memory_allocated(device) if capture_memory else None
+        )
 
         clip_start.record(stream)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         clip_end.record(stream)
         optimizer_start.record(stream)
         optimizer.step()
+        optimizer_end.record(stream)
+        retraction_start.record(stream)
         if post_step is not None:
             post_step()
-        optimizer_end.record(stream)
+        retraction_end.record(stream)
         optimizer.zero_grad(set_to_none=True)
         total_end.record(stream)
 
     torch.cuda.synchronize()
+    full_step_peak_bytes = torch.cuda.max_memory_allocated(device) if capture_memory else None
     return {
         "host_total_ms": (time.perf_counter_ns() - host_start) / 1e6,
         "gpu_total_ms": total_start.elapsed_time(total_end),
@@ -364,6 +351,9 @@ def timed_step(model, optimizer, post_step, batches, stream, grad_clip: float) -
         ),
         "grad_clip_ms": clip_start.elapsed_time(clip_end),
         "optimizer_ms": optimizer_start.elapsed_time(optimizer_end),
+        "retraction_ms": retraction_start.elapsed_time(retraction_end),
+        "forward_backward_peak_bytes": forward_backward_peak_bytes,
+        "full_step_peak_bytes": full_step_peak_bytes,
         "loss": sum(float(loss.float()) for loss in losses),
     }
 
@@ -376,6 +366,7 @@ METRICS = (
     "forward_backward_ms",
     "grad_clip_ms",
     "optimizer_ms",
+    "retraction_ms",
     "tokens_per_second",
     "tokens_per_second_forward_backward",
 )
@@ -397,14 +388,11 @@ def run(args) -> dict:
     actual_parameters = sum(parameter.numel() for parameter in model.parameters())
     _, tucker_parameters = tucker_rank_plan(args.model_size)
     expected_parameters = (
-        tucker_parameters
-        if args.variant == "static_tucker"
-        else geometry["dense_parameters"]
+        tucker_parameters if args.variant in TUCKER_VARIANTS else geometry["dense_parameters"]
     )
     if actual_parameters != expected_parameters:
         raise RuntimeError(
-            f"parameter-count mismatch: actual={actual_parameters}, "
-            f"expected={expected_parameters}"
+            f"parameter-count mismatch: actual={actual_parameters}, expected={expected_parameters}"
         )
 
     generator = torch.Generator(device=device)
@@ -438,7 +426,6 @@ def run(args) -> dict:
         if not math.isfinite(sample["loss"]):
             raise RuntimeError(f"non-finite warmup loss: {sample['loss']}")
 
-    torch.cuda.reset_peak_memory_stats(device)
     samples = []
     for iteration in range(args.measured_steps):
         sample = timed_step(model, optimizer, post_step, batches, stream, args.grad_clip)
@@ -451,14 +438,23 @@ def run(args) -> dict:
         )
         samples.append(sample)
 
+    memory_sample = timed_step(
+        model,
+        optimizer,
+        post_step,
+        batches,
+        stream,
+        args.grad_clip,
+        capture_memory=True,
+    )
+    model_bytes = sum(tensor_bytes(parameter) for parameter in model.parameters())
     memory = {
-        "model_bytes": sum(tensor_bytes(parameter) for parameter in model.parameters()),
-        "gradient_bytes_nominal": sum(
-            tensor_bytes(parameter) for parameter in model.parameters()
-        ),
+        "model_bytes": model_bytes,
+        "gradient_bytes_nominal": model_bytes,
         "optimizer_state_bytes": tensor_bytes(optimizer.state),
         "optimizer_state_dtypes": sorted(tensor_dtypes(optimizer.state)),
-        "peak_allocated_bytes": torch.cuda.max_memory_allocated(device),
+        "forward_backward_peak_allocated_bytes": memory_sample["forward_backward_peak_bytes"],
+        "peak_allocated_bytes": memory_sample["full_step_peak_bytes"],
         "peak_reserved_bytes": torch.cuda.max_memory_reserved(device),
     }
     tucker_stats = getattr(model, "_tucker_replacement_stats", None)
@@ -473,36 +469,34 @@ def run(args) -> dict:
             "intermediate_size": geometry["intermediate_size"],
             "dense_parameters": geometry["dense_parameters"],
             "actual_parameters": actual_parameters,
-            "parameter_difference_from_dense": (
-                actual_parameters - geometry["dense_parameters"]
-            ),
+            "parameter_difference_from_dense": actual_parameters - geometry["dense_parameters"],
+            "dense_lm_head": isinstance(model.lm_head, torch.nn.Linear),
             "tucker_forward_modes": (
                 dict(tucker_stats.forward_modes) if tucker_stats is not None else None
             ),
             "tucker_plans": (
                 [
-                    {
-                        "shape": shape,
-                        "ranks": ranks,
-                        "count": count,
-                    }
+                    {"shape": shape, "ranks": ranks, "count": count}
                     for shape, ranks, _, count in tucker_stats.plans
                 ]
-                if tucker_stats is not None else None
+                if tucker_stats is not None
+                else None
             ),
         },
         "variant": variant,
         "benchmark": {
             **requested_controls(args, args.microbatch, args.accumulation_steps),
             "optimizer_backend": (
-                "TensorionOptimizer" if args.variant == "static_tucker"
-                else "TensorionOptimizer/Muon" if args.variant == "dense_muon"
-                else "torch.optim.AdamW"
+                "torch.optim.AdamW"
+                if args.variant == "dense_adamw"
+                else "ParallelGroupedMuonLite"
+                if args.variant == "tucker_parallel"
+                else "MuonLite"
             ),
             "adamw_fused": args.variant == "dense_adamw",
             "cuda_timing": "events on a dedicated stream; device-wide sync at step end",
             "optimizer_parameter_split": optimizer_split,
-            "optimizer_ms_includes_tucker_retraction": args.variant == "static_tucker",
+            "optimizer_ms_excludes_retraction": True,
         },
         "gpu": {
             "uuid": f"GPU-{torch.cuda.get_device_properties(device).uuid}",
@@ -513,8 +507,7 @@ def run(args) -> dict:
         },
         "memory": memory,
         "summary": {
-            metric: summarize([sample[metric] for sample in samples])
-            for metric in METRICS
+            metric: summarize([sample[metric] for sample in samples]) for metric in METRICS
         },
         "samples": samples,
         "environment": {
@@ -528,17 +521,9 @@ def run(args) -> dict:
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--variant",
-        required=True,
-        choices=[variant["name"] for variant in VARIANTS],
-    )
+    parser.add_argument("--variant", required=True, choices=[item["name"] for item in VARIANTS])
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument(
-        "--model-size",
-        required=True,
-        choices=[spec["name"] for spec in MODEL_SPECS],
-    )
+    parser.add_argument("--model-size", required=True, choices=[item["name"] for item in MODEL_SPECS])
     parser.add_argument("--exclusive-gpu", action="store_true")
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument("--microbatch", type=int, default=1)
@@ -553,6 +538,13 @@ def parse_args():
     parser.add_argument("--eps", type=float, default=1e-8)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--tucker-cache-policy",
+        choices=("persistent", "recast", "hybrid_gate_up"),
+        default="recast",
+    )
+    parser.add_argument("--tucker-muon-core-microbatch", type=int, default=1)
+    parser.add_argument("--tucker-muon-streams", type=int, default=2)
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args()
 
@@ -563,6 +555,8 @@ def main():
         raise ValueError("microbatch, sequence length and accumulation steps must be positive")
     if args.warmup_steps < 1 or args.measured_steps < 1:
         raise ValueError("warmup and measured steps must be positive")
+    if args.tucker_muon_core_microbatch < 1 or args.tucker_muon_streams < 1:
+        raise ValueError("Tucker Muon microbatch and stream count must be positive")
     started = time.time()
     try:
         payload = run(args)
@@ -577,9 +571,9 @@ def main():
                     "variant": payload["variant"]["name"],
                     "microbatch": args.microbatch,
                     "median_ms": payload["summary"]["host_total_ms"]["median"],
-                    "tokens_per_second": payload["summary"]["tokens_per_second"]["median"],
                     "forward_backward_ms": payload["summary"]["forward_backward_ms"]["median"],
                     "optimizer_ms": payload["summary"]["optimizer_ms"]["median"],
+                    "retraction_ms": payload["summary"]["retraction_ms"]["median"],
                     "peak_gb": payload["memory"]["peak_allocated_bytes"] / 1e9,
                 },
                 sort_keys=True,

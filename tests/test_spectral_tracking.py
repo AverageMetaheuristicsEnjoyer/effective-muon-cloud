@@ -11,7 +11,7 @@ import torch.nn as nn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from models.tucker_linear import BlockTermTuckerLinear, TuckerLinear
+from models.tucker_linear import TuckerLinear
 from optim import spectral_tracking
 
 
@@ -112,24 +112,6 @@ class SpectralTrackingTest(unittest.TestCase):
         ).item()
         torch.testing.assert_close(singular_values, expected_singular_values)
         self.assertAlmostEqual(stable_rank, expected_stable_rank, places=6)
-
-    def test_block_term_effective_weight_is_reconstructed_before_svd(self):
-        module = BlockTermTuckerLinear(
-            6,
-            4,
-            rank=2,
-            terms=4,
-            bias=False,
-            forward_mode="contract",
-            dtype=torch.float64,
-        )
-
-        reconstructed = spectral_tracking._effective_weight(module)
-
-        torch.testing.assert_close(
-            reconstructed,
-            module.materialize_weight(dtype=torch.float32),
-        )
 
     def test_wandb_payload_has_individual_ranks_and_unaveraged_spectra(self):
         block = nn.Module()

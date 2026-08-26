@@ -20,3 +20,6 @@ wandb
 loguru
 
 bitsandbytes
+
+# Optional at runtime; enabled by --liger-kernels for fused LLM training ops.
+liger-kernel==0.8.1

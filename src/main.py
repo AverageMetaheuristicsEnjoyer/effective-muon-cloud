@@ -313,7 +313,6 @@ def main(args):
             parameter_logs.update(
                 {
                     "tucker/modules": tucker_stats.modules,
-                    "tucker/terms_per_module": tucker_stats.terms_per_module,
                     "tucker/dense_linear_model_parameters": (
                         tucker_stats.parameters_before
                     ),

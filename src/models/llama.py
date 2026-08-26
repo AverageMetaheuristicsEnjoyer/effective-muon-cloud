@@ -6,9 +6,30 @@ import tiktoken
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from models.base import GPTBase
 from models.tensorized_attention import tensorized_attention_from_config
+
+
+_LIGER_RMS_NORM_FUNCTION = None
+_LIGER_SILU_MUL_FUNCTION = None
+
+
+def _load_liger_kernels():
+    """Load optional kernels once, before torch.compile traces the model."""
+    global _LIGER_RMS_NORM_FUNCTION, _LIGER_SILU_MUL_FUNCTION
+    try:
+        from liger_kernel.ops import LigerRMSNormFunction
+        from liger_kernel.ops import LigerSiLUMulFunction
+        from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+    except ImportError as error:
+        raise ImportError(
+            "--liger-kernels requires the optional 'liger-kernel' package."
+        ) from error
+    _LIGER_RMS_NORM_FUNCTION = LigerRMSNormFunction
+    _LIGER_SILU_MUL_FUNCTION = LigerSiLUMulFunction
+    return LigerFusedLinearCrossEntropyLoss
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -31,6 +52,8 @@ def _reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Te
 
 
 def apply_rotary_emb(q, k, freqs_cis):
+    q_dtype = q.dtype
+    k_dtype = k.dtype
     q = q.float().reshape(*q.shape[:-1], -1, 2)
     k = k.float().reshape(*k.shape[:-1], -1, 2)
 
@@ -44,19 +67,29 @@ def apply_rotary_emb(q, k, freqs_cis):
     q_out = torch.stack((q_cos, q_sin), dim=-1).reshape(q.shape).flatten(3)
     k_out = torch.stack((k_cos, k_sin), dim=-1).reshape(k.shape).flatten(3)
 
-    return q_out, k_out
+    # Trigonometry stays in FP32, but keeping the attention activations in
+    # FP32 defeats BF16 autocast and doubles what backward must retain.
+    return q_out.to(dtype=q_dtype), k_out.to(dtype=k_dtype)
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
+    def __init__(self, dim: int, eps: float = 1e-6, use_liger: bool = False):
         super().__init__()
         self.eps = eps
+        self.use_liger = use_liger
         self.weight = nn.Parameter(torch.ones(dim))
 
     def _norm(self, x):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x):
+        if self.use_liger and x.is_cuda:
+            # Llama casting keeps only the inverse RMS in FP32. The backward
+            # kernel reuses its incoming gradient buffer, avoiding another
+            # full-size activation allocation.
+            return _LIGER_RMS_NORM_FUNCTION.apply(
+                x, self.weight, self.eps, 0.0, "llama", True
+            )
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
@@ -107,17 +140,22 @@ class LlamaBlock(nn.Module):
         self.tensorized_attention = (
             getattr(config, "attention_type", "standard") == "tensorized"
         )
+        self.use_liger = bool(getattr(config, "liger_kernels", False))
         if self.tensorized_attention and qargs is not None:
             raise ValueError("Tensorized attention is not compatible with --fp8 yet.")
 
         # Canonical construction order — identical across BF16 and FP8:
-        self.ln_1 = RMSNorm(config.n_embd, eps=config.rmsnorm_eps)
+        self.ln_1 = RMSNorm(
+            config.n_embd, eps=config.rmsnorm_eps, use_liger=self.use_liger
+        )
         self.attn = (
             tensorized_attention_from_config(config)
             if self.tensorized_attention
             else Attention(config)
         )
-        self.ln_2 = RMSNorm(config.n_embd, eps=config.rmsnorm_eps)
+        self.ln_2 = RMSNorm(
+            config.n_embd, eps=config.rmsnorm_eps, use_liger=self.use_liger
+        )
         self.mlp  = MLP(config)
 
         # FP8-only cache — adds no nn.Parameter / nn.Linear children, so it
@@ -157,9 +195,13 @@ class LlamaBlock(nn.Module):
             y = self.attn(self.ln_1(x))
             x = x + y
             h = self.ln_2(x)
-            x = x + self.mlp.down_proj(
-                F.silu(self.mlp.gate_proj(h)) * self.mlp.up_proj(h)
-            )
+            gate = self.mlp.gate_proj(h)
+            up = self.mlp.up_proj(h)
+            if self.use_liger and gate.is_cuda:
+                mlp_hidden = _LIGER_SILU_MUL_FUNCTION.apply(gate, up)
+            else:
+                mlp_hidden = F.silu(gate) * up
+            x = x + self.mlp.down_proj(mlp_hidden)
             return x
 
         _, q, k, v = self._project_qkv(x)
@@ -180,7 +222,13 @@ class LlamaBlock(nn.Module):
         x = x + self.attn.o_proj(y)
 
         h = self.ln_2(x)
-        x = x + self.mlp.down_proj(F.silu(self.mlp.gate_proj(h)) * self.mlp.up_proj(h))
+        gate = self.mlp.gate_proj(h)
+        up = self.mlp.up_proj(h)
+        if self.use_liger and gate.is_cuda:
+            mlp_hidden = _LIGER_SILU_MUL_FUNCTION.apply(gate, up)
+        else:
+            mlp_hidden = F.silu(gate) * up
+        x = x + self.mlp.down_proj(mlp_hidden)
         return x
 
     def _fp8_forward(self, x, Qx, Sx, freqs_cis):
@@ -263,6 +311,23 @@ class Llama(GPTBase):
         assert config.sequence_length is not None
         self.config = config
         self.fp8 = bool(getattr(config, "fp8", False))
+        self.use_liger = bool(getattr(config, "liger_kernels", False))
+        self.activation_checkpointing = bool(
+            getattr(config, "activation_checkpointing", False)
+        )
+        if self.use_liger and not str(getattr(config, "device", "cuda")).startswith(
+            "cuda"
+        ):
+            raise ValueError("--liger-kernels requires a CUDA device.")
+        if self.use_liger:
+            LigerFusedLinearCrossEntropyLoss = _load_liger_kernels()
+            self._fused_linear_ce = LigerFusedLinearCrossEntropyLoss(
+                ignore_index=-1,
+                label_smoothing=getattr(config, "label_smoothing", 0.0),
+                reduction="mean",
+            )
+        else:
+            self._fused_linear_ce = None
         qargs = getattr(config, "qargs", None) if self.fp8 else None
         if self.fp8:
             assert qargs is not None, (
@@ -273,7 +338,11 @@ class Llama(GPTBase):
         self._tokenizer = None
 
         self.head_dim  = config.n_embd // config.n_head
-        self.freqs_cis = precompute_freqs_cis(self.head_dim, config.sequence_length)
+        self.register_buffer(
+            "freqs_cis",
+            precompute_freqs_cis(self.head_dim, config.sequence_length),
+            persistent=False,
+        )
 
         self.transformer = nn.ModuleDict(dict(
             wte  = nn.Embedding(config.vocab_size, config.n_embd),
@@ -281,7 +350,11 @@ class Llama(GPTBase):
             h    = nn.ModuleList([
                 LlamaBlock(config, qargs, i) for i in range(config.n_layer)
             ]),
-            ln_f = RMSNorm(config.n_embd, eps=config.rmsnorm_eps),
+            ln_f = RMSNorm(
+                config.n_embd,
+                eps=config.rmsnorm_eps,
+                use_liger=self.use_liger,
+            ),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
@@ -315,16 +388,23 @@ class Llama(GPTBase):
         return sum(p.numel() for p in self.parameters())
 
     def forward(self, idx, targets=None, get_logits=False):
-        device = idx.device
-        b, t = idx.size()
+        _, t = idx.size()
         assert t <= self.config.sequence_length, (
             f"Cannot forward sequence of length {t}, "
             f"block size is only {self.config.sequence_length}"
         )
-        pos = torch.arange(0, t, dtype=torch.long, device=device)
-
-        x = self.transformer.drop(self.transformer.wte(idx))
-        freqs_cis = self.freqs_cis.to(x.device)[pos]
+        x = self.transformer.wte(idx)
+        if self.use_liger and x.is_cuda:
+            activation_dtype = {
+                "float32": torch.float32,
+                "float16": torch.float16,
+                "bfloat16": torch.bfloat16,
+            }[self.config.dtype]
+            # Embedding is not an autocast op. Without this cast the first FP32
+            # residual makes the entire residual stream FP32 even in a BF16 run.
+            x = x.to(dtype=activation_dtype)
+        x = self.transformer.drop(x)
+        freqs_cis = self.freqs_cis[:t]
 
         if self.fp8:
             x, Qx, Sx = self.quantize_input(x)
@@ -332,7 +412,27 @@ class Llama(GPTBase):
             Qx, Sx = None, None
 
         for block in self.transformer.h:
-            x, Qx, Sx = block(x, Qx, Sx, freqs_cis)
+            if self.activation_checkpointing and self.training:
+                if self.fp8:
+                    raise ValueError(
+                        "--activation-checkpointing is not compatible with --fp8."
+                    )
+
+                def block_forward(hidden, current_block=block):
+                    output, _, _ = current_block(
+                        hidden, None, None, freqs_cis
+                    )
+                    return output
+
+                x = checkpoint(
+                    block_forward,
+                    x,
+                    use_reentrant=False,
+                    preserve_rng_state=self.config.dropout > 0.0,
+                )
+                Qx, Sx = None, None
+            else:
+                x, Qx, Sx = block(x, Qx, Sx, freqs_cis)
 
         if self.fp8:
             x = self.quantize_output(x, Qx, Sx)
@@ -340,13 +440,63 @@ class Llama(GPTBase):
         x = self.transformer.ln_f(x)
 
         if targets is not None:
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                targets.view(-1),
-                ignore_index=-1,
-                label_smoothing=getattr(self.config, "label_smoothing", 0.0),
-            )
+            if self.use_liger and self.training and not get_logits:
+                # The Tucker head remains parameterised by its core and four
+                # factors. Autograd propagates the fused loss's weight gradient
+                # through this materialisation back into all five parameters.
+                if (
+                    hasattr(self.lm_head, "materialize_weight")
+                    and self.lm_head.resolved_forward_mode == "chunked_contract"
+                ):
+                    if (
+                        self.lm_head.residual_matrix is not None
+                        or self.lm_head.residual_tail is not None
+                    ):
+                        raise ValueError(
+                            "Chunked Tucker CE requires pure Tucker mode without "
+                            "an equal-parameter residual."
+                        )
+                    from models.tucker_chunked import (
+                        chunked_tucker_cross_entropy,
+                    )
+
+                    loss = chunked_tucker_cross_entropy(
+                        x,
+                        targets,
+                        self.lm_head,
+                        self.lm_head.contract_chunk_size,
+                        ignore_index=-1,
+                        label_smoothing=getattr(
+                            self.config, "label_smoothing", 0.0
+                        ),
+                    )
+                    logits = None
+                    return {"logits": None, "loss": loss}
+                if hasattr(self.lm_head, "materialize_weight"):
+                    head_weight = self.lm_head.materialize_weight(dtype=x.dtype)
+                else:
+                    head_weight = self.lm_head.weight
+                if getattr(self.lm_head, "bias", None) is not None:
+                    raise ValueError(
+                        "Fused lm_head cross entropy currently requires bias=False."
+                    )
+                fused_input = x.reshape(-1, x.size(-1)).to(
+                    dtype=head_weight.dtype
+                )
+                loss = self._fused_linear_ce(
+                    head_weight,
+                    fused_input,
+                    targets.reshape(-1),
+                )
+                logits = None
+            else:
+                logits = self.lm_head(x)
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    targets.view(-1),
+                    ignore_index=-1,
+                    label_smoothing=getattr(self.config, "label_smoothing", 0.0),
+                )
         else:
             logits = self.lm_head(x[:, [-1], :])
             loss = None

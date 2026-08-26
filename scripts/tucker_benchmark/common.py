@@ -13,13 +13,14 @@ from scripts.monarch_benchmark.common import MODEL_SPECS, model_spec
 VARIANTS = (
     {"name": "dense_adamw", "label": "Dense AdamW"},
     {"name": "dense_muon", "label": "Dense Muon"},
-    {"name": "static_tucker", "label": "Tucker rank-8 iso-param + Tensorion"},
+    {"name": "tucker_reference", "label": "Tucker reference"},
+    {"name": "tucker_parallel", "label": "Tucker parallel (new)"},
 )
 
 MICROBATCHES = (1, 2, 4, 8, 16)
 DEFAULT_SEQUENCE_LENGTH = 1024
 DEFAULT_TOKENS_PER_STEP = 16_384
-HARNESS_REVISION = 3
+HARNESS_REVISION = 4
 TUCKER_RANK_MULTIPLE = 8
 
 
@@ -174,7 +175,9 @@ def requested_controls(args, microbatch: int, accumulation: int) -> dict:
     _, tucker_parameters = tucker_rank_plan(args.model_size)
     return {
         "harness_revision": HARNESS_REVISION,
-        "storage_dtype": "bfloat16",
+        "storage_dtype": "float32",
+        "autocast_dtype": "bfloat16",
+        "optimizer_state_dtype": "float32",
         "sequence_length": args.sequence_length,
         "microbatch": microbatch,
         "accumulation_steps": accumulation,
@@ -193,12 +196,18 @@ def requested_controls(args, microbatch: int, accumulation: int) -> dict:
         "tucker_rank_multiple": TUCKER_RANK_MULTIPLE,
         "tucker_mode_multiple": TUCKER_RANK_MULTIPLE,
         "tucker_parameters": tucker_parameters,
-        "tucker_forward_mode": "contract",
-        "static_tucker_component_execution": "five_cuda_streams",
-        "tucker_lr_scaling_mode": "first_order_calibrated",
-        "tensorion_ns_steps": 6,
-        "dense_muon_ns_steps": 5,
-        "tucker_vector_transport": True,
+        "tucker_forward_mode": "chunked_contract",
+        "tucker_contract_chunk_size": microbatch * args.sequence_length,
+        "tucker_dense_lm_head": True,
+        "tucker_equal_params": False,
+        "tucker_cache_policy": args.tucker_cache_policy,
+        "tucker_parallel_muon": args.variant == "tucker_parallel",
+        "tucker_muon_core_microbatch": args.tucker_muon_core_microbatch,
+        "tucker_muon_streams": args.tucker_muon_streams,
+        "tucker_grouped_retraction": args.variant == "tucker_parallel",
+        "tucker_vector_transport": False,
+        "muon_ns_steps": 6,
+        "liger_fused_cross_entropy": True,
     }
 
 

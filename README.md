@@ -1,5 +1,8 @@
 # Stage 2
 
+Для проверенного direct Tucker запуска без материализации на A100 см.
+[A100_TUCKER_RUN.md](A100_TUCKER_RUN.md).
+
 ## TL;DR
 ```bash
 conda env create -f environment.yml && conda activate huawei-stage2 && bash setup.sh
@@ -298,6 +301,32 @@ parameter. W&B receives train/validation metrics, GPU memory, throughput,
 stable-rank/spectrum diagnostics, and Tucker factor orthogonality errors.
 Only the rotating `ckpts/latest` resume checkpoint is retained locally by
 default.
+
+The launcher enables `--liger-kernels` and `--compile` by default. The fused
+training path keeps exactly the same Tucker core/factors and parameter count,
+but does not materialise the `[batch, sequence, vocab]` logits tensor for the
+loss. It also fuses RMSNorm and the SwiGLU SiLU/multiply operation. Set
+`OPTIMIZED_KERNELS=0` to run the original PyTorch path for an A/B comparison.
+
+For a memory-first run, set `ACTIVATION_CHECKPOINTING=1`. Block activations are
+then recomputed during backward; this reduces peak memory further but normally
+increases step time, so it is intentionally not the default.
+
+The existing ten-step benchmark modes can compare the same unchanged model:
+
+```bash
+# Peak/allocation breakdown (original, then optimized)
+OPTIMIZED_KERNELS=0 MEMORY_BENCH=1 bash \
+  scripts/single_gpu/tucker_transformer/fineweb_standard_attention_muon_tucker_retract_1x_chinchilla.sh
+MEMORY_BENCH=1 bash \
+  scripts/single_gpu/tucker_transformer/fineweb_standard_attention_muon_tucker_retract_1x_chinchilla.sh
+
+# Forward/backward/optimizer wall time (original, then optimized)
+OPTIMIZED_KERNELS=0 TIME_BENCH=1 bash \
+  scripts/single_gpu/tucker_transformer/fineweb_standard_attention_muon_tucker_retract_1x_chinchilla.sh
+TIME_BENCH=1 bash \
+  scripts/single_gpu/tucker_transformer/fineweb_standard_attention_muon_tucker_retract_1x_chinchilla.sh
+```
 
 `split_concat` is intended for the 30-100 token contexts used in the paper.
 For 1K+ token experiments, use `TENSORIZED_MODE=reconstruction`; materializing

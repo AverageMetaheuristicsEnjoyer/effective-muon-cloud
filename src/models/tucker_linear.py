@@ -1,4 +1,4 @@
-"""Configurable Tucker and block-term parameterisation for ``nn.Linear`` modules.
+"""Configurable Tucker parameterisation for ``nn.Linear`` modules.
 
 The optional equal-parameter mode represents a logical matrix as
 
@@ -26,23 +26,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def balanced_factor_pair(value: int, multiple: int = 1) -> tuple[int, int]:
+def balanced_factor_pair(value: int) -> tuple[int, int]:
     """Return exact factors nearest sqrt(value), without padded dead features."""
     if value <= 0:
         raise ValueError(f"feature dimension must be positive, got {value}")
-    if multiple <= 0:
-        raise ValueError(f"factor multiple must be positive, got {multiple}")
     left = math.isqrt(value)
-    while left and (
-        value % left
-        or left % multiple
-        or (value // left) % multiple
-    ):
+    while value % left:
         left -= 1
-    if not left:
-        raise ValueError(
-            f"feature dimension {value} has no exact factor pair divisible by {multiple}"
-        )
     return left, value // left
 
 
@@ -57,15 +47,14 @@ def _parameter_count(
 def auto_tucker_ranks(
     in_features: int,
     out_features: int,
-    mode_multiple: int = 1,
 ) -> tuple[int, int, int, int]:
     """Choose the largest valid full-Tucker parameterisation under ``n*m``.
 
     The four mode ranks may differ.  This is both less redundant and closer to
     the dense parameter budget than forcing a single rank on unequal modes.
     """
-    n1, n2 = balanced_factor_pair(in_features, mode_multiple)
-    m1, m2 = balanced_factor_pair(out_features, mode_multiple)
+    n1, n2 = balanced_factor_pair(in_features)
+    m1, m2 = balanced_factor_pair(out_features)
     modes = (n1, n2, m1, m2)
     budget = in_features * out_features
     best_key = None
@@ -296,7 +285,7 @@ class TuckerLinear(nn.Module):
         init_std: float = 0.02,
         forward_mode: str = "auto",
         expected_tokens_per_forward: int = 1,
-        mode_multiple: int = 1,
+        contract_chunk_size: int = 64,
         extra_parameters: int = 0,
         device=None,
         dtype=None,
@@ -306,29 +295,34 @@ class TuckerLinear(nn.Module):
             raise ValueError("in_features and out_features must be positive")
         self.in_features = int(in_features)
         self.out_features = int(out_features)
-        self.in_modes = balanced_factor_pair(self.in_features, mode_multiple)
-        self.out_modes = balanced_factor_pair(self.out_features, mode_multiple)
+        self.in_modes = balanced_factor_pair(self.in_features)
+        self.out_modes = balanced_factor_pair(self.out_features)
         self.modes = (*self.in_modes, *self.out_modes)
         self.equal_params = bool(equal_params)
         self.init_std = float(init_std)
         if extra_parameters < 0:
             raise ValueError("extra_parameters must be non-negative")
         self.extra_parameters = int(extra_parameters)
-        if forward_mode not in ("auto", "contract", "materialize"):
+        if forward_mode not in (
+            "auto",
+            "contract",
+            "materialize",
+            "chunked_contract",
+        ):
             raise ValueError(
-                "Tucker forward_mode must be auto, contract, or materialize"
+                "Tucker forward_mode must be auto, contract, materialize, "
+                "or chunked_contract"
             )
         if expected_tokens_per_forward <= 0:
             raise ValueError("expected_tokens_per_forward must be positive")
         self.forward_mode = forward_mode
         self.expected_tokens_per_forward = int(expected_tokens_per_forward)
+        if contract_chunk_size <= 0:
+            raise ValueError("Tucker contract chunk size must be positive")
+        self.contract_chunk_size = int(contract_chunk_size)
 
         if rank == "auto":
-            ranks = auto_tucker_ranks(
-                self.in_features,
-                self.out_features,
-                mode_multiple,
-            )
+            ranks = auto_tucker_ranks(self.in_features, self.out_features)
             self.rank_policy = "auto"
         elif isinstance(rank, int):
             if rank <= 0:
@@ -479,12 +473,7 @@ class TuckerLinear(nn.Module):
     def reset_parameters(self, *, init_std: float | None = None) -> None:
         target_std = self.init_std if init_std is None else float(init_std)
         for factor in (self.U1, self.U2, self.U3, self.U4):
-            if factor.dtype in (torch.float16, torch.bfloat16):
-                work = torch.empty_like(factor, dtype=torch.float32)
-                nn.init.orthogonal_(work)
-                factor.data.copy_(work)
-            else:
-                nn.init.orthogonal_(factor)
+            nn.init.orthogonal_(factor)
         core_elements = math.prod(self.ranks)
         core_std = target_std * math.sqrt(
             self.in_features * self.out_features / core_elements
@@ -520,16 +509,8 @@ class TuckerLinear(nn.Module):
                 + m1 * r4 * self.in_features * r3
                 + self.dense_parameter_count * r4
             )
-            dense_macs = self.dense_parameter_count
-            if hasattr(self, "_block_term_index"):
-                # A BTD wrapper materializes all terms before one shared matmul.
-                dense_macs = (
-                    self.dense_parameter_count
-                    if self._block_term_index == 0
-                    else 0
-                )
             return (
-                2 * dense_macs
+                2 * self.dense_parameter_count
                 + (
                     2 * reconstruction_macs
                     + self.residual_parameter_count
@@ -593,6 +574,17 @@ class TuckerLinear(nn.Module):
         if self.resolved_forward_mode == "materialize":
             weight = self.materialize_weight(dtype=self.core_matrix.dtype)
             return F.linear(x, weight, self.bias)
+
+        if self.resolved_forward_mode == "chunked_contract":
+            from models.tucker_chunked import chunked_tucker_linear
+
+            output = chunked_tucker_linear(x, self, self.contract_chunk_size)
+            residual = self._residual_forward(x)
+            if residual is not None:
+                output = output + residual
+            if self.bias is not None:
+                output = output + self.bias.to(dtype=output.dtype)
+            return output
 
         output = self._tucker_forward(x)
         residual = self._residual_forward(x)
@@ -759,135 +751,9 @@ class TuckerLinear(nn.Module):
         )
 
 
-class BlockTermTuckerLinear(nn.Module):
-    """A linear map represented by a sum of independent Tucker terms."""
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        *,
-        rank: str | int | tuple[int, int, int, int],
-        terms: int,
-        bias: bool = True,
-        init_std: float = 0.02,
-        forward_mode: str = "auto",
-        expected_tokens_per_forward: int = 1,
-        device=None,
-        dtype=None,
-    ) -> None:
-        super().__init__()
-        if terms <= 1:
-            raise ValueError("Block-term Tucker requires at least two terms")
-        self.in_features = int(in_features)
-        self.out_features = int(out_features)
-        self.num_terms = int(terms)
-        component_std = float(init_std) / math.sqrt(self.num_terms)
-        self.components = nn.ModuleList(
-            [
-                TuckerLinear(
-                    in_features,
-                    out_features,
-                    rank=rank,
-                    bias=False,
-                    equal_params=False,
-                    init_std=component_std,
-                    forward_mode=forward_mode,
-                    expected_tokens_per_forward=expected_tokens_per_forward,
-                    device=device,
-                    dtype=dtype,
-                )
-                for _ in range(self.num_terms)
-            ]
-        )
-        first = self.components[0]
-        self.in_modes = first.in_modes
-        self.out_modes = first.out_modes
-        self.modes = first.modes
-        self.ranks = first.ranks
-        self.rank_policy = first.rank_policy
-        self.resolved_forward_mode = first.resolved_forward_mode
-        self.equal_params = False
-        self.extra_parameters = 0
-        self.dense_parameter_count = first.dense_parameter_count
-        self.tucker_parameter_count = sum(
-            component.tucker_parameter_count for component in self.components
-        )
-        self.residual_parameter_count = 0
-        self.register_parameter("residual_matrix", None)
-        self.register_parameter("residual_tail", None)
-        for index, component in enumerate(self.components):
-            component._block_term_index = index
-
-        if bias:
-            self.bias = nn.Parameter(
-                torch.zeros(out_features, device=device, dtype=dtype)
-            )
-        else:
-            self.register_parameter("bias", None)
-
-    @property
-    def weight_parameter_count(self) -> int:
-        return self.tucker_parameter_count
-
-    @property
-    def residual_density(self) -> float:
-        return 0.0
-
-    @property
-    def forward_flops_per_token(self) -> float:
-        return sum(
-            component.forward_flops_per_token for component in self.components
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.shape[-1] != self.in_features:
-            raise ValueError(
-                f"Expected last dimension {self.in_features}, got {x.shape[-1]}"
-        )
-        if self.resolved_forward_mode == "materialize":
-            weight = self.materialize_weight(
-                dtype=self.components[0].core_matrix.dtype
-            )
-            return F.linear(x, weight, self.bias)
-
-        output = self.components[0]._tucker_forward(x)
-        for component in self.components[1:]:
-            output = output + component._tucker_forward(x)
-        if self.bias is not None:
-            output = output + self.bias.to(dtype=output.dtype)
-        return output
-
-    def materialize_weight(
-        self,
-        *,
-        dtype: torch.dtype = torch.float32,
-        max_elements: int | None = None,
-    ) -> torch.Tensor:
-        weight = self.components[0].materialize_weight(
-            dtype=dtype,
-            max_elements=max_elements,
-        )
-        for component in self.components[1:]:
-            weight = weight + component.materialize_weight(
-                dtype=dtype,
-                max_elements=max_elements,
-            )
-        return weight
-
-    def extra_repr(self) -> str:
-        return (
-            f"in_features={self.in_features}, out_features={self.out_features}, "
-            f"terms={self.num_terms}, modes={self.modes}, ranks={self.ranks}, "
-            f"forward_mode={self.resolved_forward_mode!r}, "
-            f"bias={self.bias is not None}"
-        )
-
-
 @dataclass(frozen=True)
 class TuckerReplacementStats:
     modules: int
-    terms_per_module: int
     parameters_before: int
     parameters_after: int
     tucker_parameters: int
@@ -995,14 +861,11 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
         if getattr(config, "tucker_down_ranks", None)
         else None
     )
-    rank_plan_source = getattr(config, "tucker_rank_plan", None)
+    rank_plan_path = getattr(config, "tucker_rank_plan", None)
     rank_plan: dict[str, tuple[int, int, int, int]] | None = None
-    if rank_plan_source:
-        if isinstance(rank_plan_source, dict):
-            payload = rank_plan_source
-        else:
-            with Path(rank_plan_source).open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
+    if rank_plan_path:
+        with Path(rank_plan_path).open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
         raw_plan = payload.get("module_ranks", payload)
         if not isinstance(raw_plan, dict):
             raise ValueError("--tucker-rank-plan must contain a JSON object")
@@ -1046,16 +909,8 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
         "gate_up": gate_up_rank_spec,
         "down": down_rank_spec,
     }
-    tucker_terms = int(getattr(config, "tucker_terms", 1))
-    if tucker_terms <= 0:
-        raise ValueError("--tucker-terms must be positive")
     equal_params = bool(getattr(config, "tucker_equal_params", True))
-    if tucker_terms > 1 and equal_params:
-        raise ValueError(
-            "Block-term Tucker requires --no-tucker-equal-params"
-        )
     forward_mode = getattr(config, "tucker_forward_mode", "auto")
-    mode_multiple = int(getattr(config, "tucker_mode_multiple", 1))
     expected_tokens_per_forward = (
         int(getattr(config, "batch_size", 1)) * int(config.sequence_length)
     )
@@ -1124,7 +979,7 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
         for index, name in enumerate(candidates):
             target_extras[name] = quotient + int(index < remainder)
 
-    modules: list[TuckerLinear | BlockTermTuckerLinear] = []
+    modules: list[TuckerLinear] = []
     plan_counts: dict[tuple[tuple[int, int], tuple[int, int, int, int], int], int] = {}
 
     def replace(parent: nn.Module, prefix: str = "") -> None:
@@ -1136,34 +991,28 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
                 init_std = float(config.init_std)
                 if full_name.endswith(("o_proj", "down_proj")):
                     init_std /= math.sqrt(2 * config.n_layer)
-                if tucker_terms == 1:
-                    replacement = TuckerLinear(
-                        child.in_features,
-                        child.out_features,
-                        rank=rank_spec_for_layer(full_name),
-                        bias=child.bias is not None,
-                        equal_params=equal_params,
-                        init_std=init_std,
-                        forward_mode=forward_mode,
-                        expected_tokens_per_forward=expected_tokens_per_forward,
-                        mode_multiple=mode_multiple,
-                        extra_parameters=target_extras[full_name],
-                        device=child.weight.device,
-                        dtype=child.weight.dtype,
-                    )
-                else:
-                    replacement = BlockTermTuckerLinear(
-                        child.in_features,
-                        child.out_features,
-                        rank=rank_spec_for_layer(full_name),
-                        terms=tucker_terms,
-                        bias=child.bias is not None,
-                        init_std=init_std,
-                        forward_mode=forward_mode,
-                        expected_tokens_per_forward=expected_tokens_per_forward,
-                        device=child.weight.device,
-                        dtype=child.weight.dtype,
-                    )
+                replacement = TuckerLinear(
+                    child.in_features,
+                    child.out_features,
+                    rank=rank_spec_for_layer(full_name),
+                    bias=child.bias is not None,
+                    equal_params=equal_params,
+                    init_std=init_std,
+                    forward_mode=forward_mode,
+                    expected_tokens_per_forward=expected_tokens_per_forward,
+                    contract_chunk_size=int(
+                        getattr(
+                            config,
+                            "tucker_head_contract_chunk_size",
+                            getattr(config, "tucker_contract_chunk_size", 1024),
+                        )
+                        if full_name == "lm_head"
+                        else getattr(config, "tucker_contract_chunk_size", 1024)
+                    ),
+                    extra_parameters=target_extras[full_name],
+                    device=child.weight.device,
+                    dtype=child.weight.dtype,
+                )
                 if child.bias is not None:
                     with torch.no_grad():
                         replacement.bias.copy_(child.bias)
@@ -1215,7 +1064,6 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
 
     stats = TuckerReplacementStats(
         modules=len(modules),
-        terms_per_module=tucker_terms,
         parameters_before=parameters_before,
         parameters_after=parameters_after,
         tucker_parameters=sum(module.tucker_parameter_count for module in modules),
@@ -1247,7 +1095,6 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
 
     print("\nTucker Linear replacement:")
     print(f"  modules: {stats.modules}")
-    print(f"  terms per module: {stats.terms_per_module}")
     print(
         f"  total parameters: {stats.parameters_before:,} -> "
         f"{stats.parameters_after:,}"
@@ -1270,8 +1117,7 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
     print(f"  resolved forward modes: {dict(stats.forward_modes)}")
     for (in_features, out_features), ranks, residual, count in stats.plans:
         print(
-            f"  {count:>2}x {in_features}->{out_features}: "
-            f"terms={stats.terms_per_module}, ranks={ranks}, "
+            f"  {count:>2}x {in_features}->{out_features}: ranks={ranks}, "
             f"residual={residual:,} "
             f"({residual / (in_features * out_features):.2%})"
         )

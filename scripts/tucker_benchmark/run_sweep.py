@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the resumable static-Tucker benchmark sweep on one exclusive GPU."""
+"""Run the resumable dense/Tucker benchmark sweep on one exclusive GPU."""
 from __future__ import annotations
 
 import argparse
@@ -61,6 +61,7 @@ def result_path(
 
 
 def run_point(args, model: dict, variant: dict, microbatch: int) -> dict:
+    args.variant = variant["name"]
     accumulation = accumulation_steps(
         args.tokens_per_step, microbatch, args.sequence_length
     )
@@ -112,6 +113,12 @@ def run_point(args, model: dict, variant: dict, microbatch: int) -> dict:
         str(args.grad_clip),
         "--seed",
         str(args.seed),
+        "--tucker-cache-policy",
+        args.tucker_cache_policy,
+        "--tucker-muon-core-microbatch",
+        str(args.tucker_muon_core_microbatch),
+        "--tucker-muon-streams",
+        str(args.tucker_muon_streams),
         "--output",
         str(output),
     ]
@@ -148,7 +155,7 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("benchmark_results/static-tucker-257m"),
+        default=Path("benchmark_results/tucker-parallel-rank8-scale"),
     )
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--models", default=None)
@@ -166,6 +173,13 @@ def parse_args():
     parser.add_argument("--eps", type=float, default=1e-8)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--tucker-cache-policy",
+        choices=("persistent", "recast", "hybrid_gate_up"),
+        default="recast",
+    )
+    parser.add_argument("--tucker-muon-core-microbatch", type=int, default=1)
+    parser.add_argument("--tucker-muon-streams", type=int, default=2)
     parser.add_argument("--rerun", action="store_true")
     parser.add_argument("--exclusive-gpu", action="store_true", default=True)
     return parser.parse_args()
