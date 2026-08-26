@@ -19,7 +19,7 @@ wandb
 # part of muon-lite; could be remove in the future
 loguru
 
-bitsandbytes
+bitsandbytes==0.50.1
 
 # Optional at runtime; enabled by --liger-kernels for fused LLM training ops.
 liger-kernel==0.8.1
