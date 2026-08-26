@@ -5,6 +5,14 @@ set -u
 RESULTS=${TUCKER_BENCH_RESULTS:-/workspace-SR006.nfs3/tucker-parallel-rank8-scale-20260826}
 mkdir -p "$RESULTS/logs" "$RESULTS/results"
 
+if [ "${1:-}" = "disk" ]; then
+    df -h /workspace-SR006.nfs3
+    df -i /workspace-SR006.nfs3
+    du -sh /workspace-SR006.nfs3/tucker-membench/python 2>/dev/null || true
+    du -sh "$RESULTS" 2>/dev/null || true
+    exit 0
+fi
+
 if [ "${1:-}" = "peek" ]; then
     newest=$(ls -t "$RESULTS"/logs/*.log 2>/dev/null | head -1)
     echo "points: $(ls -1 "$RESULTS/results/runs" 2>/dev/null | wc -l)"
@@ -61,7 +69,7 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
     echo "commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "python: $(python -V 2>&1)"
     export PYTHONPATH=.:src
-    PYTHON_DEPS=/workspace-SR006.nfs3/tucker-membench/python
+    PYTHON_DEPS=/tmp/tucker-benchmark-python
     export PYTHONPATH="$PYTHON_DEPS:$PYTHONPATH"
     if ! python -c "import tiktoken, loguru, liger_kernel" 2>/dev/null; then
         mkdir -p "$PYTHON_DEPS"

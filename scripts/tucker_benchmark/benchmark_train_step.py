@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
-for item in (ROOT, ROOT / "src"):
+for item in (ROOT, ROOT / "src", ROOT / "experiments/fused_persistent_tucker"):
     if str(item) not in sys.path:
         sys.path.insert(0, str(item))
 
