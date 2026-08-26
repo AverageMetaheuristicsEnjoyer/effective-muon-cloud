@@ -29,41 +29,48 @@ from models.utils import get_model  # noqa: E402
 from optim.tensorion import TensorionOptimizer, tucker_core_shape_overrides  # noqa: E402
 from scripts.tucker_benchmark.common import (  # noqa: E402
     DEFAULT_SEQUENCE_LENGTH,
+    MODEL_SPECS,
+    TUCKER_RANK_MULTIPLE,
     VARIANTS,
     atomic_write_json,
+    model_geometry,
     requested_controls,
     summarize,
+    tucker_rank_plan,
     variant_spec,
 )
 
 
 def make_config(args) -> SimpleNamespace:
     static_tucker = args.variant == "static_tucker"
+    geometry = model_geometry(args.model_size)
+    rank_plan, tucker_parameters = tucker_rank_plan(args.model_size)
     return SimpleNamespace(
         model="llama",
         vocab_size=50_304,
         sequence_length=args.sequence_length,
         batch_size=args.microbatch,
-        n_layer=12,
-        n_embd=1024,
-        n_head=8,
+        n_layer=geometry["n_layer"],
+        n_embd=geometry["n_embd"],
+        n_head=geometry["n_head"],
         dropout=0.0,
         bias=False,
         init_std=0.02,
         rmsnorm_eps=1e-5,
         multiple_of=256,
-        ffn_hidden_size=0,
+        ffn_hidden_size=geometry["intermediate_size"],
         label_smoothing=0.0,
         qkv_clipping=False,
         qkv_clipping_factor=1.0,
         attention_type="standard",
         linear_parameterization="tucker" if static_tucker else "dense",
-        tucker_rank="259",
+        tucker_rank="auto",
         tucker_ranks=None,
         tucker_attention_ranks=None,
         tucker_gate_up_ranks=None,
         tucker_down_ranks=None,
-        tucker_rank_plan=None,
+        tucker_rank_plan=rank_plan if static_tucker else None,
+        tucker_mode_multiple=TUCKER_RANK_MULTIPLE,
         tucker_terms=1,
         tucker_equal_params=False,
         tucker_forward_mode="contract",
@@ -71,8 +78,10 @@ def make_config(args) -> SimpleNamespace:
         tucker_retract_every_step=static_tucker,
         tucker_vector_transport=static_tucker,
         tucker_riemannian_muon=static_tucker,
-        target_parameter_count=257_676_352,
-        target_parameter_tolerance=12_312,
+        target_parameter_count=geometry["dense_parameters"],
+        target_parameter_tolerance=abs(
+            tucker_parameters - geometry["dense_parameters"]
+        ),
         fp8=False,
         fp8_optim=False,
         qargs=None,
@@ -82,12 +91,11 @@ def make_config(args) -> SimpleNamespace:
 def instantiate_model(config: SimpleNamespace, device: torch.device):
     previous_dtype = torch.get_default_dtype()
     try:
-        torch.set_default_dtype(torch.float32)
+        torch.set_default_dtype(torch.bfloat16)
         with torch.device(device):
             model = get_model(config)
     finally:
         torch.set_default_dtype(previous_dtype)
-    model.to(dtype=torch.bfloat16)
     model.train()
     return model
 
@@ -384,12 +392,19 @@ def run(args) -> dict:
     torch.backends.cudnn.allow_tf32 = True
 
     variant = variant_spec(args.variant)
+    geometry = model_geometry(args.model_size)
     model, optimizer, post_step, optimizer_split = build_model_and_optimizer(args, device)
     actual_parameters = sum(parameter.numel() for parameter in model.parameters())
-    if actual_parameters != variant["parameters"]:
+    _, tucker_parameters = tucker_rank_plan(args.model_size)
+    expected_parameters = (
+        tucker_parameters
+        if args.variant == "static_tucker"
+        else geometry["dense_parameters"]
+    )
+    if actual_parameters != expected_parameters:
         raise RuntimeError(
             f"parameter-count mismatch: actual={actual_parameters}, "
-            f"expected={variant['parameters']}"
+            f"expected={expected_parameters}"
         )
 
     generator = torch.Generator(device=device)
@@ -450,13 +465,30 @@ def run(args) -> dict:
     return {
         "status": "complete",
         "model": {
-            "name": "llama-257m",
-            "n_layer": 12,
-            "n_embd": 1024,
-            "n_head": 8,
+            "name": geometry["name"],
+            "label": geometry["label"],
+            "n_layer": geometry["n_layer"],
+            "n_embd": geometry["n_embd"],
+            "n_head": geometry["n_head"],
+            "intermediate_size": geometry["intermediate_size"],
+            "dense_parameters": geometry["dense_parameters"],
             "actual_parameters": actual_parameters,
+            "parameter_difference_from_dense": (
+                actual_parameters - geometry["dense_parameters"]
+            ),
             "tucker_forward_modes": (
                 dict(tucker_stats.forward_modes) if tucker_stats is not None else None
+            ),
+            "tucker_plans": (
+                [
+                    {
+                        "shape": shape,
+                        "ranks": ranks,
+                        "count": count,
+                    }
+                    for shape, ranks, _, count in tucker_stats.plans
+                ]
+                if tucker_stats is not None else None
             ),
         },
         "variant": variant,
@@ -502,6 +534,11 @@ def parse_args():
         choices=[variant["name"] for variant in VARIANTS],
     )
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--model-size",
+        required=True,
+        choices=[spec["name"] for spec in MODEL_SPECS],
+    )
     parser.add_argument("--exclusive-gpu", action="store_true")
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument("--microbatch", type=int, default=1)
@@ -536,6 +573,7 @@ def main():
             json.dumps(
                 {
                     "status": payload["status"],
+                    "model": args.model_size,
                     "variant": payload["variant"]["name"],
                     "microbatch": args.microbatch,
                     "median_ms": payload["summary"]["host_total_ms"]["median"],

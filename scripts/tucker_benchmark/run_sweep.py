@@ -14,6 +14,7 @@ from scripts.tucker_benchmark.common import (
     DEFAULT_SEQUENCE_LENGTH,
     DEFAULT_TOKENS_PER_STEP,
     MICROBATCHES,
+    MODEL_SPECS,
     VARIANTS,
     accumulation_steps,
     atomic_write_json,
@@ -39,16 +40,37 @@ def selected_variants(names: str | None) -> list[dict]:
     return [by_name[name] for name in wanted]
 
 
-def result_path(output_dir: Path, variant: str, microbatch: int) -> Path:
-    return output_dir / "runs" / f"llama-257m-{variant}-bs{microbatch}.json"
+def selected_models(names: str | None) -> list[dict]:
+    if not names:
+        return list(MODEL_SPECS)
+    wanted = [name.strip() for name in names.split(",") if name.strip()]
+    by_name = {model["name"]: model for model in MODEL_SPECS}
+    unknown = [name for name in wanted if name not in by_name]
+    if unknown:
+        raise ValueError(f"unknown models: {unknown}")
+    return [by_name[name] for name in wanted]
 
 
-def run_point(args, variant: dict, microbatch: int) -> dict:
+def result_path(
+    output_dir: Path,
+    model: str,
+    variant: str,
+    microbatch: int,
+) -> Path:
+    return output_dir / "runs" / f"{model}-{variant}-bs{microbatch}.json"
+
+
+def run_point(args, model: dict, variant: dict, microbatch: int) -> dict:
     accumulation = accumulation_steps(
         args.tokens_per_step, microbatch, args.sequence_length
     )
     controls = requested_controls(args, microbatch, accumulation)
-    output = result_path(args.output_dir, variant["name"], microbatch)
+    output = result_path(
+        args.output_dir,
+        model["name"],
+        variant["name"],
+        microbatch,
+    )
     if output.is_file() and not args.rerun:
         payload = json.loads(output.read_text())
         if result_matches_request(payload, variant["name"], controls):
@@ -61,6 +83,8 @@ def run_point(args, variant: dict, microbatch: int) -> dict:
         "scripts.tucker_benchmark.benchmark_train_step",
         "--variant",
         variant["name"],
+        "--model-size",
+        model["name"],
         "--exclusive-gpu",
         "--sequence-length",
         str(args.sequence_length),
@@ -94,7 +118,8 @@ def run_point(args, variant: dict, microbatch: int) -> dict:
     environment = os.environ.copy()
     environment["PYTHONUNBUFFERED"] = "1"
     log(
-        f"Running {variant['label']} / microbatch {microbatch} x {accumulation}"
+        f"Running {model['label']} / {variant['label']} / "
+        f"microbatch {microbatch} x {accumulation}"
     )
     completed = subprocess.run(
         command, cwd=ROOT, env=environment, check=False
@@ -105,7 +130,10 @@ def run_point(args, variant: dict, microbatch: int) -> dict:
         )
     payload = json.loads(output.read_text())
     if payload.get("status") == "oom":
-        log(f"Out of memory: {variant['label']} / microbatch {microbatch}")
+        log(
+            f"Out of memory: {model['label']} / {variant['label']} / "
+            f"microbatch {microbatch}"
+        )
         return payload
     if completed.returncode != 0 or payload.get("status") != "complete":
         raise RuntimeError(
@@ -123,6 +151,7 @@ def parse_args():
         default=Path("benchmark_results/static-tucker-257m"),
     )
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--models", default=None)
     parser.add_argument("--variants", default=None)
     parser.add_argument("--microbatches", default=None)
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
@@ -144,6 +173,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    models = selected_models(args.models)
     variants = selected_variants(args.variants)
     microbatches = (
         [int(value) for value in args.microbatches.split(",")]
@@ -157,28 +187,33 @@ def main():
 
     results = []
     exhausted = set()
-    for microbatch in sorted(microbatches):
-        for variant in variants:
-            if variant["name"] in exhausted:
-                continue
-            payload = run_point(args, variant, microbatch)
-            results.append(payload)
-            if payload.get("status") == "oom":
-                exhausted.add(variant["name"])
-            atomic_write_json(
-                args.output_dir / "results.json",
-                {
-                    "status": "running",
-                    "variants": [item["name"] for item in variants],
-                    "microbatches": sorted(microbatches),
-                    "results": results,
-                },
-            )
+    for model in models:
+        args.model_size = model["name"]
+        for microbatch in sorted(microbatches):
+            for variant in variants:
+                key = (model["name"], variant["name"])
+                if key in exhausted:
+                    continue
+                payload = run_point(args, model, variant, microbatch)
+                results.append(payload)
+                if payload.get("status") == "oom":
+                    exhausted.add(key)
+                atomic_write_json(
+                    args.output_dir / "results.json",
+                    {
+                        "status": "running",
+                        "models": [item["name"] for item in models],
+                        "variants": [item["name"] for item in variants],
+                        "microbatches": sorted(microbatches),
+                        "results": results,
+                    },
+                )
 
     atomic_write_json(
         args.output_dir / "results.json",
         {
             "status": "complete",
+            "models": [item["name"] for item in models],
             "variants": [item["name"] for item in variants],
             "microbatches": sorted(microbatches),
             "results": results,

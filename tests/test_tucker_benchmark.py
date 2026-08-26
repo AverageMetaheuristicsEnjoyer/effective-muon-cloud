@@ -4,10 +4,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.tucker_benchmark.common import (
+    MODEL_SPECS,
     accumulation_steps,
     requested_controls,
     result_matches_request,
     summarize,
+    tucker_rank_plan,
 )
 
 
@@ -26,6 +28,7 @@ class TuckerBenchmarkTest(unittest.TestCase):
             grad_clip=1.0,
             seed=0,
             exclusive_gpu=True,
+            model_size="257m",
         )
 
     def test_accumulation_preserves_tokens_per_step(self):
@@ -42,6 +45,7 @@ class TuckerBenchmarkTest(unittest.TestCase):
     def test_result_reuse_requires_identical_controls(self):
         controls = requested_controls(self.args(), 4, 4)
         self.assertEqual(controls["tucker_forward_mode"], "contract")
+        self.assertEqual(controls["tucker_rank_multiple"], 8)
         payload = {
             "status": "complete",
             "variant": {"name": "static_tucker"},
@@ -54,6 +58,48 @@ class TuckerBenchmarkTest(unittest.TestCase):
         changed = dict(controls, seed=1)
         self.assertFalse(
             result_matches_request(payload, "static_tucker", changed)
+        )
+
+    def test_rank8_plans_are_iso_param_at_every_scale(self):
+        for spec in MODEL_SPECS:
+            with self.subTest(model=spec["name"]):
+                plan, parameters = tucker_rank_plan(spec["name"])
+                self.assertTrue(plan)
+                self.assertTrue(
+                    all(rank % 8 == 0 for ranks in plan.values() for rank in ranks)
+                )
+                relative_error = abs(parameters - spec["dense_params_expected"]) / spec[
+                    "dense_params_expected"
+                ]
+                self.assertLess(relative_error, 3e-4)
+
+    @unittest.skipUnless(find_spec("torch"), "PyTorch is not installed")
+    def test_257m_rank8_plan_matches_constructed_model(self):
+        import torch
+
+        from models.tucker_linear import TuckerLinear
+        from models.utils import get_model
+        from scripts.tucker_benchmark.benchmark_train_step import make_config
+
+        args = self.args()
+        args.variant = "static_tucker"
+        args.microbatch = 1
+        config = make_config(args)
+        with torch.device("meta"):
+            model = get_model(config)
+
+        self.assertEqual(
+            sum(parameter.numel() for parameter in model.parameters()),
+            257_249_152,
+        )
+        modules = [module for module in model.modules() if isinstance(module, TuckerLinear)]
+        self.assertEqual(len(modules), 84)
+        self.assertTrue(
+            all(
+                value % 8 == 0
+                for module in modules
+                for value in (*module.modes, *module.ranks)
+            )
         )
 
     @unittest.skipUnless(find_spec("torch"), "PyTorch is not installed")
@@ -120,6 +166,8 @@ class TuckerBenchmarkTest(unittest.TestCase):
         config.multiple_of = 4
         config.ffn_hidden_size = 16
         config.tucker_rank = "2"
+        config.tucker_rank_plan = None
+        config.tucker_mode_multiple = 1
         config.target_parameter_count = 0
         config.target_parameter_tolerance = 0
 

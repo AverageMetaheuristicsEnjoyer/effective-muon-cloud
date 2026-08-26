@@ -199,6 +199,12 @@ class TuckerLinearTest(unittest.TestCase):
                 self.assertEqual(pair, expected)
                 self.assertEqual(pair[0] * pair[1], value)
 
+    def test_balanced_factor_pairs_can_align_modes(self):
+        self.assertEqual(balanced_factor_pair(2816, 8), (32, 88))
+        self.assertEqual(balanced_factor_pair(11008, 8), (32, 344))
+        with self.assertRaisesRegex(ValueError, "no exact factor pair"):
+            balanced_factor_pair(1023, 8)
+
     def test_auto_ranks_for_experiment_shapes(self):
         expected = {
             (1024, 1023): ((32, 32, 31, 32), 27_679),

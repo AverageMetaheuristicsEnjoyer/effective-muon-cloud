@@ -2,7 +2,7 @@
 # Cloud.ru mlsub entry point. It keeps logs and results on the persistent nfs3 volume.
 set -u
 
-RESULTS=${TUCKER_BENCH_RESULTS:-/workspace-SR006.nfs3/tucker-membench}
+RESULTS=${TUCKER_BENCH_RESULTS:-/workspace-SR006.nfs3/tucker-scale-rank8-membench-20260826}
 mkdir -p "$RESULTS/logs" "$RESULTS/results"
 
 if [ "${1:-}" = "peek" ]; then
@@ -19,17 +19,21 @@ import json
 import sys
 from pathlib import Path
 
-print("variant\tmicrobatch\tstatus\tmedian_ms\tforward_ms\tbackward_ms\tforward_backward_ms\tforward_backward_tokens_per_second\toptimizer_ms\tpeak_gb\tstate_gb\tmodel_gb\tgrad_clip_ms\tgpu")
+print("model\tvariant\tparameters\tdifference_from_dense\tmicrobatch\tstatus\tmedian_ms\tforward_ms\tbackward_ms\tforward_backward_ms\tforward_backward_tokens_per_second\toptimizer_ms\tpeak_gb\tstate_gb\tmodel_gb\tgrad_clip_ms\tgpu")
 for path in sorted(Path(sys.argv[1]).glob("*.json")):
     payload = json.loads(path.read_text())
     status = payload.get("status")
     if status != "complete":
-        print(f"{payload.get('variant', '')}\t{payload.get('requested_controls', {}).get('microbatch', '')}\t{status}")
+        controls = payload.get("requested_controls", {})
+        print(f"{controls.get('model_size', '')}\t{payload.get('variant', '')}\t\t\t{controls.get('microbatch', '')}\t{status}")
         continue
     summary = payload["summary"]
     memory = payload["memory"]
     print("\t".join(map(str, (
+        payload["model"]["name"],
         payload["variant"]["name"],
+        payload["model"]["actual_parameters"],
+        payload["model"]["parameter_difference_from_dense"],
         payload["benchmark"]["microbatch"],
         status,
         round(summary["host_total_ms"]["median"], 3),
