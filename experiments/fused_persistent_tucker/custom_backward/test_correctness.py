@@ -18,6 +18,7 @@ sys.path.insert(0, str(HERE.parents[1]))
 sys.path.insert(0, str(HERE.parent))
 
 from models.tucker_chunked import chunked_tucker_linear as reference_linear  # noqa: E402
+import models.tucker_linear as tucker_linear_module  # noqa: E402
 from models.tucker_linear import TuckerLinear  # noqa: E402
 from experiments.fused_persistent_tucker.custom_backward.ops import (  # noqa: E402
     custom_tucker_linear,
@@ -111,6 +112,40 @@ def main():
                 3e-2,
                 3e-2,
             )
+
+    # The cross-scale benchmark uses rank-8-aligned factor pairs.  For 2816
+    # features that is 32x88, which deliberately exercises the generic path.
+    original_factor_pair = tucker_linear_module.balanced_factor_pair
+    try:
+        tucker_linear_module.balanced_factor_pair = lambda value: (
+            (32, 88) if value == 2816 else original_factor_pair(value)
+        )
+        aligned = TuckerLinear(
+            1024,
+            2816,
+            rank=(32, 32, 32, 64),
+            bias=False,
+            equal_params=False,
+            forward_mode="chunked_contract",
+            contract_chunk_size=16384,
+            device="cuda",
+        ).train()
+    finally:
+        tucker_linear_module.balanced_factor_pair = original_factor_pair
+    aligned_reference = copy.deepcopy(aligned)
+    aligned_custom = copy.deepcopy(aligned)
+    aligned_x = torch.randn(64, 1024, device="cuda", dtype=torch.bfloat16)
+    ref_y, ref_loss, ref_grads = _run(
+        aligned_reference, aligned_x, reference_linear
+    )
+    implementation = lambda value, module, chunk: custom_tucker_linear(
+        value, module, chunk, cache_policy="recast"
+    )
+    y, loss, grads = _run(aligned_custom, aligned_x, implementation)
+    _assert_close("rank8_fallback.forward", y, ref_y, 0.0, 0.0)
+    _assert_close("rank8_fallback.loss", loss, ref_loss, 1e-6, 1e-6)
+    for name, expected in ref_grads.items():
+        _assert_close(f"rank8_fallback.{name}", grads[name], expected, 4e-2, 4e-2)
 
     # Non-contiguous input and four chunks exercise the generic accumulation.
     wide = torch.randn(256, 2048, device="cuda", dtype=torch.bfloat16)
