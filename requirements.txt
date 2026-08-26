@@ -22,4 +22,4 @@ loguru
 bitsandbytes==0.50.1
 
 # Optional at runtime; enabled by --liger-kernels for fused LLM training ops.
-liger-kernel==0.8.1
+liger-kernel==0.8.2

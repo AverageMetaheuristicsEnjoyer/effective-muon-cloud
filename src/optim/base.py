@@ -623,18 +623,18 @@ def train(
                 assert _mem_before_batch[-1] == memory_usage, "THEY ARE DIFFERENT"
 
         if _time_bench:
-            _iter_t_events = []
+            _iter_t_data = 0
+            _iter_t_fwd = 0
+            _iter_t_bwd = 0
 
         for microstep_idx in range(cfg.acc_steps):  # gradient accumulation
             if _time_bench:
-                _te0 = torch.cuda.Event(enable_timing=True)
-                _te1 = torch.cuda.Event(enable_timing=True)
-                _te2 = torch.cuda.Event(enable_timing=True)
-                _te3 = torch.cuda.Event(enable_timing=True)
-                _te0.record()
+                torch.cuda.synchronize()
+                _tb0 = time.perf_counter_ns()
             x, y = get_batch(train_reader, device=cfg.device)
             if _time_bench:
-                _te1.record()
+                torch.cuda.synchronize()
+                _tb1 = time.perf_counter_ns()
             # MEMORY_BENCH: Before step forward
             # Content: weights + opt states + grads (from prev microbatches)
             if os.environ.get("MEMORY_BENCH", "false") in ["1", "True", "true"]:
@@ -654,7 +654,8 @@ def train(
                     outputs = model(x, targets=y)
 
             if _time_bench:
-                _te2.record()
+                torch.cuda.synchronize()
+                _tb2 = time.perf_counter_ns()
 
             # MEMORY_BENCH: After step forward
             # Content: weights + opt states + grads (from prev microbatches) + activations
@@ -668,8 +669,11 @@ def train(
                 loss.backward()
 
             if _time_bench:
-                _te3.record()
-                _iter_t_events.append((_te0, _te1, _te2, _te3))
+                torch.cuda.synchronize()
+                _tb3 = time.perf_counter_ns()
+                _iter_t_data += _tb1 - _tb0
+                _iter_t_fwd += _tb2 - _tb1
+                _iter_t_bwd += _tb3 - _tb2
 
             substep += 1
 
@@ -700,9 +704,8 @@ def train(
                 _mem_after_batch.append(memory_usage)
         
         if _time_bench:
-            _te4 = torch.cuda.Event(enable_timing=True)
-            _te5 = torch.cuda.Event(enable_timing=True)
-            _te4.record()
+            torch.cuda.synchronize()
+            _tb4 = time.perf_counter_ns()
         opt.step()
         tucker_retraction_diagnostics = None
         if getattr(cfg, "tucker_retract_every_step", False):
@@ -726,8 +729,8 @@ def train(
             print_activation_dtypes(activation_dtypes, distributed_backend)
             print_memory_usage(distributed_backend, cfg.device, label="After Step 1")
         if _time_bench:
-            _te5.record()
             torch.cuda.synchronize()
+            _tb5 = time.perf_counter_ns()
         if scheduler is not None:
             scheduler.step()
         opt.zero_grad(set_to_none=True)
@@ -740,10 +743,10 @@ def train(
         dt = (time.perf_counter_ns() - t_start) / 1e9
 
         if _time_bench:
-            _t_data.append(sum(e0.elapsed_time(e1) for e0, e1, _, _ in _iter_t_events))
-            _t_fwd.append(sum(e1.elapsed_time(e2) for _, e1, e2, _ in _iter_t_events))
-            _t_bwd.append(sum(e2.elapsed_time(e3) for _, _, e2, e3 in _iter_t_events))
-            _t_opt.append(_te4.elapsed_time(_te5))
+            _t_data.append(_iter_t_data / 1e6)
+            _t_fwd.append(_iter_t_fwd / 1e6)
+            _t_bwd.append(_iter_t_bwd / 1e6)
+            _t_opt.append((_tb5 - _tb4) / 1e6)
 
         curr_iter += 1
         if distributed_backend.is_master_process():
