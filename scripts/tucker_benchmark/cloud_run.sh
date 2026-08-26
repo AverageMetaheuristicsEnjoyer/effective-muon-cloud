@@ -65,22 +65,28 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
     export PYTHONPATH="$PYTHON_DEPS:$PYTHONPATH"
     if ! python -c "import tiktoken, loguru, liger_kernel" 2>/dev/null; then
         mkdir -p "$PYTHON_DEPS"
-        pip install --target "$PYTHON_DEPS" -q tiktoken loguru liger-kernel==0.8.1
+        pip install --target "$PYTHON_DEPS" -q --no-deps \
+            tiktoken loguru liger-kernel==0.8.1
     fi
     if [ "${1:-}" = "selftest" ]; then
         python -m unittest discover -s tests -p test_tucker_benchmark.py
     elif [ "${1:-}" = "correctness" ]; then
-        python experiments/fused_persistent_tucker/custom_backward/test_correctness.py
-        python experiments/fused_persistent_tucker/custom_backward/test_parallel_muon.py
-        python experiments/fused_persistent_tucker/custom_backward/test_grouped_retraction.py
+        python experiments/fused_persistent_tucker/custom_backward/test_correctness.py && \
+            python experiments/fused_persistent_tucker/custom_backward/test_parallel_muon.py && \
+            python experiments/fused_persistent_tucker/custom_backward/test_grouped_retraction.py
     elif [ "${1:-}" = "autotune" ]; then
-        for streams in 1 2 4; do
-            python -m scripts.tucker_benchmark.run_sweep \
-                --output-dir "$RESULTS/autotune-streams-$streams" \
-                --models 257m --variants tucker_parallel --microbatches 16 \
-                --warmup-steps 3 --measured-steps 12 \
-                --tucker-muon-streams "$streams"
-        done
+        python -m scripts.tucker_benchmark.run_sweep \
+            --output-dir "$RESULTS/autotune-streams-1" \
+            --models 257m --variants tucker_parallel --microbatches 16 \
+            --warmup-steps 3 --measured-steps 12 --tucker-muon-streams 1 && \
+        python -m scripts.tucker_benchmark.run_sweep \
+            --output-dir "$RESULTS/autotune-streams-2" \
+            --models 257m --variants tucker_parallel --microbatches 16 \
+            --warmup-steps 3 --measured-steps 12 --tucker-muon-streams 2 && \
+        python -m scripts.tucker_benchmark.run_sweep \
+            --output-dir "$RESULTS/autotune-streams-4" \
+            --models 257m --variants tucker_parallel --microbatches 16 \
+            --warmup-steps 3 --measured-steps 12 --tucker-muon-streams 4
     else
         python -m scripts.tucker_benchmark.run_sweep \
             --output-dir "$RESULTS/results" \
