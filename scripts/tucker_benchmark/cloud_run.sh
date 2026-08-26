@@ -13,14 +13,6 @@ if [ "${1:-}" = "disk" ]; then
     exit 0
 fi
 
-if [ "${1:-}" = "clean-deps" ]; then
-    DEP_CACHE=/workspace-SR006.nfs3/tucker-membench/python
-    du -sh "$DEP_CACHE" 2>/dev/null || true
-    rm -rf -- "$DEP_CACHE"
-    df -h /workspace-SR006.nfs3
-    exit 0
-fi
-
 if [ "${1:-}" = "peek" ]; then
     newest=$(ls -t "$RESULTS"/logs/*.log 2>/dev/null | head -1)
     echo "points: $(ls -1 "$RESULTS/results/runs" 2>/dev/null | wc -l)"
