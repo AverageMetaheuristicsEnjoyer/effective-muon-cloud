@@ -13,13 +13,10 @@ du -sh "$root"/* 2>/dev/null | sort -h
 
 echo "=== mlsub log directories by size (KiB) ==="
 if [[ -d $logs ]]; then
-  find "$logs" -mindepth 1 -maxdepth 1 -type d -print0 \
-    | xargs -0 -r du -sk 2>/dev/null \
-    | sort -nr \
-    | head -100
-  echo "=== mlsub log directories by mtime ==="
-  find "$logs" -mindepth 1 -maxdepth 1 -type d \
-    -printf '%TY-%Tm-%TdT%TH:%TM:%TSZ %p\n' \
+  du -ah "$logs" 2>/dev/null | sort -rh | head -100
+  echo "=== mlsub log entries by mtime ==="
+  find "$logs" -mindepth 1 -maxdepth 2 \
+    -printf '%TY-%Tm-%TdT%TH:%TM:%TSZ %y %s %p\n' \
     | sort \
     | head -100
 else
