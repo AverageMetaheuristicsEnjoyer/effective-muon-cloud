@@ -3,7 +3,7 @@ set -u
 
 root=/workspace-SR006.nfs2
 logs="$root/mlsub-logs"
-: "${ACTIVE_JOB_IDS:?set ACTIVE_JOB_IDS to a comma-separated global active-job list}"
+: "${ACTIVE_JOB_IDS:?set ACTIVE_JOB_IDS to a colon-separated global active-job list}"
 
 echo "=== before ==="
 df -h "$root"
@@ -13,8 +13,8 @@ removed=0
 removed_kib=0
 while IFS= read -r -d '' path; do
   name=${path##*/}
-  case ",$ACTIVE_JOB_IDS," in
-    *",$name,"*)
+  case ":$ACTIVE_JOB_IDS:" in
+    *":$name:"*)
       echo "KEEP_ACTIVE $name"
       continue
       ;;
