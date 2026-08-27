@@ -63,7 +63,7 @@ fi
 if ! python -c "import importlib.metadata; assert importlib.metadata.version('ai2-olmo-eval') == '0.8.5'; from olmo_eval import HFTokenizer, ICLMetric, build_task" 2>/dev/null; then
     pip install --target "${PYTHON_DEPS}" -q --no-deps --upgrade \
         ai2-olmo-eval==0.8.5 torchmetrics==1.8.2 lightning-utilities==0.15.2 \
-        cached-path==1.8.10 rich==13.9.4
+        cached-path==1.8.10 rich==13.9.4 importlib-resources==6.5.2
 fi
 python - "${PYTHON_DEPS}" <<'PY'
 import importlib.metadata
