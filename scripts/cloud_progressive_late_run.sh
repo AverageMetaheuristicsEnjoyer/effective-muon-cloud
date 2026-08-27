@@ -56,12 +56,18 @@ print(f"wandb_api_key_present={bool(os.environ.get('WANDB_API_KEY'))}")
 PY
 fi
 
-if ! python -c "import loguru, schedulefree, tiktoken, wandb" 2>/dev/null; then
+if ! python -c "import loguru, schedulefree, sentry_sdk, tiktoken, wandb" 2>/dev/null; then
     pip install --target "${PYTHON_DEPS}" -q --no-deps \
-        loguru==0.7.3 schedulefree tiktoken==0.12.0 wandb==0.25.1
+        loguru==0.7.3 schedulefree sentry-sdk tiktoken==0.12.0 wandb==0.25.1
 fi
-python -c "import datasets, huggingface_hub, loguru, pyarrow, schedulefree, tiktoken, transformers, wandb, zstandard"
+python -c "import datasets, huggingface_hub, loguru, pyarrow, schedulefree, sentry_sdk, tiktoken, transformers, wandb, zstandard"
 if [[ "${MODE}" == "preflight" ]]; then
+    WANDB_MODE=offline WANDB_DIR="${ROOT}/wandb" python - <<'PY'
+import wandb
+
+run = wandb.init(project="tucker-cloud-preflight")
+run.finish()
+PY
     exit 0
 fi
 
