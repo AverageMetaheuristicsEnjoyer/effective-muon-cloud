@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT=${TUCKER_LATE_ROOT:-/workspace-SR006.nfs3/tucker-late-growth-20260827}
 PYTHON_DEPS="${ROOT}/python"
-mkdir -p "${ROOT}/logs" "${ROOT}/exps" "${ROOT}/evals_cache" "${ROOT}/hf-cache" "${PYTHON_DEPS}"
+mkdir -p "${ROOT}/logs" "${ROOT}/exps" "${ROOT}/evals_cache" "${ROOT}/hf-cache" "${ROOT}/wandb" "${PYTHON_DEPS}"
 export PYTHONNOUSERSITE=1
 export PYTHONPATH="${PYTHON_DEPS}:.:src"
 export HF_HOME="${ROOT}/hf-cache"
@@ -30,6 +30,11 @@ if [[ "${MODE}" == "peek" ]]; then
     newest=$(ls -t "${ROOT}"/logs/*.log 2>/dev/null | head -1)
     echo "latest log: ${newest:-none}"
     [[ -n "${newest}" ]] && tail -"${2:-200}" "${newest}"
+    exit 0
+fi
+
+if [[ "${MODE}" == "disk" ]]; then
+    du -h --max-depth=4 "${ROOT}" | sort -h | tail -40
     exit 0
 fi
 
@@ -72,10 +77,11 @@ case "${MODE}" in
     169) LAUNCHER=scripts/launch_tucker169_to_257_late_custom_backward.sh ;;
     smoke225)
         LAUNCHER=scripts/launch_tucker225_to_257_late_custom_backward.sh
+        export EXPERIMENT_NAME=llama257m_tucker_late_225m_to_257m_customfb_bs16acc8_smoke
         export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
-    *) echo "Expected mode: preflight, repair-python, peek, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
+    *) echo "Expected mode: preflight, repair-python, peek, disk, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"
@@ -84,7 +90,8 @@ export DATASETS_DIR="${ROOT}/fineweb-local-if-present"
 export WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
 export WANDB_ENTITY=${WANDB_ENTITY:-efficient-muon}
 export WANDB_PROJECT=${WANDB_PROJECT:-muon-variations}
-export WANDB_MODE=${WANDB_MODE:-online}
+export WANDB_MODE=${WANDB_MODE:-offline}
+export WANDB_DIR=${WANDB_DIR:-"${ROOT}/wandb"}
 
 LOG="${ROOT}/logs/${MODE}-$(date +%F_%H%M%S)-$$.log"
 bash "${LAUNCHER}" 2>&1 | tee "${LOG}"

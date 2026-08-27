@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BASE_LAUNCHER="${SCRIPT_DIR}/single_gpu/tucker_transformer/fineweb_standard_attention_tensorion_muon_adamw_tucker_retract_1x_chinchilla_wd002.sh"
 
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"llama257m_tucker_late_225m_to_257m_customfb_bs16acc8"}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"llama257m_tucker_late_225m_to_257m_customfb_bs16acc8_run1"}
 export TARGET_PARAMETER_COUNT=224635072
 export TARGET_PARAMETER_TOLERANCE=0
 export TUCKER_RANKS=""
