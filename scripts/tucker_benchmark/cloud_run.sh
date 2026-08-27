@@ -104,7 +104,7 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
         run_correctness
     elif [ "${1:-}" = "autotune" ]; then
         run_autotune
-    elif [ "${1:-}" = "pipeline" ]; then
+    elif [ "${1:-}" = "pipeline" ] || [ "${1:-}" = "pipeline-257m" ]; then
         run_correctness && run_autotune
         pipeline_status=$?
         if [ "$pipeline_status" -eq 0 ]; then
@@ -123,9 +123,14 @@ print(min(scores, key=scores.get))
 PY
             )
             echo "selected H100 Muon streams: $best_streams"
+            model_args=()
+            if [ "${1:-}" = "pipeline-257m" ]; then
+                model_args=(--models 257m)
+            fi
             python -m scripts.tucker_benchmark.run_sweep \
                 --output-dir "$RESULTS/results" \
-                --tucker-muon-streams "$best_streams"
+                --tucker-muon-streams "$best_streams" \
+                "${model_args[@]}"
         else
             (exit "$pipeline_status")
         fi
