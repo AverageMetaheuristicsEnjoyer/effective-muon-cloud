@@ -26,6 +26,13 @@ if [[ "${MODE}" == "repair-python" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "peek" ]]; then
+    newest=$(ls -t "${ROOT}"/logs/*.log 2>/dev/null | head -1)
+    echo "latest log: ${newest:-none}"
+    [[ -n "${newest}" ]] && tail -"${2:-200}" "${newest}"
+    exit 0
+fi
+
 if [[ "${MODE}" == "preflight" ]]; then
     python - <<'PY'
 import importlib
@@ -68,7 +75,7 @@ case "${MODE}" in
         export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
-    *) echo "Expected mode: preflight, repair-python, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
+    *) echo "Expected mode: preflight, repair-python, peek, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"
