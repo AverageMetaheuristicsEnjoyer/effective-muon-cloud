@@ -45,7 +45,7 @@ if ! python -c "import datasets, huggingface_hub, liger_kernel, loguru, pyarrow,
 fi
 
 if [[ "${MODE}" == "correctness" ]]; then
-    python -m pytest -q tests/test_progressive_tucker.py tests/test_tucker_chunked.py
+    python -m unittest tests.test_progressive_tucker tests.test_tucker_chunked
     TUCKER_CUSTOM_CACHE_POLICY=recast \
         python experiments/fused_persistent_tucker/custom_backward/test_correctness.py
     exit 0
