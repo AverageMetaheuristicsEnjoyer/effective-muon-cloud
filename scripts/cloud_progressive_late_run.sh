@@ -19,6 +19,12 @@ if [[ "${OMPI_COMM_WORLD_SIZE:-1}" != "1" ]]; then
     exit 2
 fi
 
+if [[ "${MODE}" == "repair-python" ]]; then
+    rm -rf "${PYTHON_DEPS}"
+    mkdir -p "${PYTHON_DEPS}"
+    exit 0
+fi
+
 if [[ "${MODE}" == "preflight" ]]; then
     python - <<'PY'
 import importlib
@@ -38,10 +44,9 @@ PY
     exit 0
 fi
 
-if ! python -c "import datasets, huggingface_hub, liger_kernel, loguru, pyarrow, schedulefree, tiktoken, transformers, wandb, zstandard" 2>/dev/null; then
-    pip install --target "${PYTHON_DEPS}" -q \
-        datasets huggingface_hub liger-kernel==0.8.1 loguru pyarrow schedulefree \
-        tiktoken transformers wandb zstandard
+python -c "import datasets, huggingface_hub, loguru, pyarrow, schedulefree, tiktoken, transformers, wandb, zstandard"
+if ! python -c "import liger_kernel" 2>/dev/null; then
+    pip install --target "${PYTHON_DEPS}" -q --no-deps liger-kernel==0.8.1
 fi
 
 if [[ "${MODE}" == "correctness" ]]; then
@@ -59,7 +64,7 @@ case "${MODE}" in
         export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
-    *) echo "Expected mode: preflight, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
+    *) echo "Expected mode: preflight, repair-python, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"
