@@ -46,3 +46,8 @@ mlsub run --repo <public-mirror> --branch <branch> \
 
 Results persist under
 `/workspace-SR006.nfs3/tucker-parallel-rank8-scale-20260826`.
+
+The `progressive-ranks` Cloud command benchmarks the four lower 257M
+progressive stages (133M, 160M, 190M, and 225M) both with their exact rank
+plans and with parameter-matched rank-8 plans. It runs the reference and new
+parallel Tucker paths at microbatches 1/2/4/8/16.

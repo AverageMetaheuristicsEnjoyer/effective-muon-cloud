@@ -5,6 +5,7 @@ import math
 import os
 import statistics
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 from scripts.monarch_benchmark.common import MODEL_SPECS, model_spec
@@ -23,6 +24,43 @@ DEFAULT_TOKENS_PER_STEP = 16_384
 HARNESS_REVISION = 5
 TUCKER_RANK_MULTIPLE = 8
 FAST_ISO_FFN_WIDTHS = {"257m": 3072}
+
+PROGRESSIVE_257M_STAGES = (
+    {
+        "name": "133m",
+        "target_parameters": 133_000_000,
+        "attention": (22, 27, 22, 27),
+        "gate_up": (22, 27, 22, 27),
+        "down": (22, 27, 22, 27),
+    },
+    {
+        "name": "160m",
+        "target_parameters": 160_000_000,
+        "attention": (25, 29, 25, 29),
+        "gate_up": (25, 29, 30, 40),
+        "down": (30, 40, 25, 29),
+    },
+    {
+        "name": "190m",
+        "target_parameters": 190_000_000,
+        "attention": (28, 30, 28, 30),
+        "gate_up": (28, 30, 35, 50),
+        "down": (35, 50, 28, 30),
+    },
+    {
+        "name": "225m",
+        "target_parameters": 225_000_000,
+        "attention": (30, 31, 30, 31),
+        "gate_up": (30, 31, 41, 58),
+        "down": (41, 58, 30, 31),
+    },
+)
+
+PROGRESSIVE_RANK_PROFILES = tuple(
+    f"progressive_{stage['name']}_{alignment}"
+    for stage in PROGRESSIVE_257M_STAGES
+    for alignment in ("exact", "rank8")
+)
 
 
 def model_geometry(name: str) -> dict:
@@ -185,6 +223,184 @@ def tucker_rank_plan(name: str) -> tuple[dict[str, tuple[int, int, int, int]], i
     return full_plan, actual_parameters
 
 
+def _progressive_stage(profile: str) -> tuple[dict, str]:
+    for stage in PROGRESSIVE_257M_STAGES:
+        for alignment in ("exact", "rank8"):
+            if profile == f"progressive_{stage['name']}_{alignment}":
+                return stage, alignment
+    raise KeyError(f"unknown Tucker rank profile {profile!r}")
+
+
+def _fixed_parameter_count(geometry: dict) -> int:
+    replaced = sum(
+        in_features * out_features
+        for _, in_features, out_features in _tucker_module_shapes(geometry)
+    )
+    return geometry["dense_parameters"] - replaced
+
+
+def _exact_progressive_plan(stage: dict) -> tuple[dict, int]:
+    geometry = model_geometry("257m")
+    plan = {}
+    parameters = _fixed_parameter_count(geometry)
+    for module_name, in_features, out_features in _tucker_module_shapes(geometry):
+        if ".attn." in module_name:
+            ranks = stage["attention"]
+        elif module_name.endswith(".mlp.down_proj"):
+            ranks = stage["down"]
+        else:
+            ranks = stage["gate_up"]
+        modes = (*_factor_pair(in_features), *_factor_pair(out_features))
+        plan[module_name] = ranks
+        parameters += _tucker_parameter_count(modes, ranks)
+    return plan, parameters
+
+
+@lru_cache(maxsize=None)
+def _rank8_progressive_plan(target_parameters: int) -> tuple[dict, int]:
+    geometry = model_geometry("257m")
+    modules = _tucker_module_shapes(geometry)
+    modes = {
+        name: (*_factor_pair(in_features), *_factor_pair(out_features))
+        for name, in_features, out_features in modules
+    }
+    plan = {name: (8, 8, 8, 8) for name, _, _ in modules}
+    counts = {
+        name: _tucker_parameter_count(modes[name], plan[name])
+        for name in plan
+    }
+    parameters = _fixed_parameter_count(geometry) + sum(counts.values())
+
+    while True:
+        candidates = []
+        for module_name in sorted(plan):
+            ranks = plan[module_name]
+            module_modes = modes[module_name]
+            for rank_index, (rank, mode) in enumerate(zip(ranks, module_modes)):
+                if rank + TUCKER_RANK_MULTIPLE > mode:
+                    continue
+                updated = list(ranks)
+                updated[rank_index] += TUCKER_RANK_MULTIPLE
+                updated = tuple(updated)
+                updated_count = _tucker_parameter_count(module_modes, updated)
+                increase = updated_count - counts[module_name]
+                if parameters + increase <= target_parameters:
+                    candidates.append(
+                        (
+                            updated[rank_index] / mode,
+                            max(
+                                value / module_mode
+                                for value, module_mode in zip(updated, module_modes)
+                            ),
+                            increase,
+                            module_name,
+                            updated,
+                            updated_count,
+                        )
+                    )
+        if not candidates:
+            break
+        _, _, increase, module_name, updated, updated_count = min(candidates)
+        plan[module_name] = updated
+        counts[module_name] = updated_count
+        parameters += increase
+
+    best_difference = abs(parameters - target_parameters)
+    best_move = None
+    increments = []
+    decrements = []
+    for module_name in sorted(plan):
+        ranks = plan[module_name]
+        module_modes = modes[module_name]
+        for rank_index, (rank, mode) in enumerate(zip(ranks, module_modes)):
+            if rank + TUCKER_RANK_MULTIPLE <= mode:
+                updated = list(ranks)
+                updated[rank_index] += TUCKER_RANK_MULTIPLE
+                updated = tuple(updated)
+                updated_count = _tucker_parameter_count(module_modes, updated)
+                increase = updated_count - counts[module_name]
+                increments.append((module_name, updated, updated_count, increase))
+                difference = abs(parameters + increase - target_parameters)
+                if difference < best_difference:
+                    best_difference = difference
+                    best_move = ("increment", module_name, updated, updated_count)
+            if rank > TUCKER_RANK_MULTIPLE:
+                updated = list(ranks)
+                updated[rank_index] -= TUCKER_RANK_MULTIPLE
+                updated = tuple(updated)
+                updated_count = _tucker_parameter_count(module_modes, updated)
+                decrease = counts[module_name] - updated_count
+                decrements.append((module_name, updated, updated_count, decrease))
+
+    for dec_name, dec_ranks, dec_count, decrease in decrements:
+        for inc_name, inc_ranks, inc_count, increase in increments:
+            if dec_name == inc_name:
+                continue
+            difference = abs(
+                parameters - decrease + increase - target_parameters
+            )
+            if difference < best_difference:
+                best_difference = difference
+                best_move = (
+                    "swap",
+                    dec_name,
+                    dec_ranks,
+                    dec_count,
+                    inc_name,
+                    inc_ranks,
+                    inc_count,
+                )
+
+    if best_move is not None:
+        if best_move[0] == "increment":
+            _, module_name, updated, updated_count = best_move
+            parameters += updated_count - counts[module_name]
+            plan[module_name] = updated
+            counts[module_name] = updated_count
+        else:
+            (
+                _,
+                dec_name,
+                dec_ranks,
+                dec_count,
+                inc_name,
+                inc_ranks,
+                inc_count,
+            ) = best_move
+            parameters += dec_count - counts[dec_name]
+            parameters += inc_count - counts[inc_name]
+            plan[dec_name] = dec_ranks
+            plan[inc_name] = inc_ranks
+
+    return plan, parameters
+
+
+def tucker_benchmark_plan(
+    model_name: str,
+    rank_profile: str = "iso",
+) -> tuple[dict, dict[str, tuple[int, int, int, int]], int, dict]:
+    if rank_profile == "iso":
+        geometry = tucker_model_geometry(model_name)
+        plan, parameters = tucker_rank_plan(model_name)
+        return geometry, plan, parameters, {
+            "name": rank_profile,
+            "alignment": "rank8",
+            "target_parameters": model_geometry(model_name)["dense_parameters"],
+        }
+    if model_name != "257m":
+        raise ValueError("progressive rank profiles are only defined for 257m")
+    stage, alignment = _progressive_stage(rank_profile)
+    if alignment == "exact":
+        plan, parameters = _exact_progressive_plan(stage)
+    else:
+        plan, parameters = _rank8_progressive_plan(stage["target_parameters"])
+    return model_geometry(model_name), plan, parameters, {
+        "name": rank_profile,
+        "alignment": alignment,
+        "target_parameters": stage["target_parameters"],
+    }
+
+
 def variant_spec(name: str) -> dict:
     for variant in VARIANTS:
         if variant["name"] == name:
@@ -203,7 +419,10 @@ def accumulation_steps(tokens_per_step: int, microbatch: int, sequence_length: i
 
 
 def requested_controls(args, microbatch: int, accumulation: int) -> dict:
-    _, tucker_parameters = tucker_rank_plan(args.model_size)
+    rank_profile = getattr(args, "tucker_rank_profile", "iso")
+    _, _, tucker_parameters, profile = tucker_benchmark_plan(
+        args.model_size, rank_profile
+    )
     return {
         "harness_revision": HARNESS_REVISION,
         "storage_dtype": "float32",
@@ -224,9 +443,16 @@ def requested_controls(args, microbatch: int, accumulation: int) -> dict:
         "seed": args.seed,
         "exclusive_gpu": args.exclusive_gpu,
         "model_size": args.model_size,
-        "tucker_rank_multiple": TUCKER_RANK_MULTIPLE,
+        "tucker_rank_profile": rank_profile,
+        "tucker_rank_alignment": profile["alignment"],
+        "tucker_rank_target_parameters": profile["target_parameters"],
+        "tucker_rank_multiple": (
+            TUCKER_RANK_MULTIPLE if profile["alignment"] == "rank8" else 1
+        ),
         "tucker_mode_multiple": (
-            1 if args.model_size in FAST_ISO_FFN_WIDTHS else TUCKER_RANK_MULTIPLE
+            1
+            if rank_profile != "iso" or args.model_size in FAST_ISO_FFN_WIDTHS
+            else TUCKER_RANK_MULTIPLE
         ),
         "tucker_parameters": tucker_parameters,
         "tucker_forward_mode": "chunked_contract",

@@ -4,10 +4,13 @@ from types import SimpleNamespace
 
 from scripts.tucker_benchmark.common import (
     MODEL_SPECS,
+    PROGRESSIVE_257M_STAGES,
+    PROGRESSIVE_RANK_PROFILES,
     accumulation_steps,
     requested_controls,
     result_matches_request,
     summarize,
+    tucker_benchmark_plan,
     tucker_rank_plan,
 )
 
@@ -30,6 +33,7 @@ class TuckerBenchmarkTest(unittest.TestCase):
             seed=0,
             exclusive_gpu=True,
             model_size="257m",
+            tucker_rank_profile="iso",
             tucker_cache_policy="recast",
             tucker_muon_core_microbatch=1,
             tucker_muon_streams=2,
@@ -72,6 +76,39 @@ class TuckerBenchmarkTest(unittest.TestCase):
                 )
                 relative_error = abs(parameters - spec["dense_params_expected"]) / spec[
                     "dense_params_expected"
+                ]
+                self.assertLess(relative_error, 3e-4)
+
+    def test_progressive_exact_and_rank8_profiles_match_stage_budgets(self):
+        expected_exact = {
+            "133m": 132_990_448,
+            "160m": 159_965_968,
+            "190m": 190_252_624,
+            "225m": 224_635_072,
+        }
+        self.assertEqual(len(PROGRESSIVE_RANK_PROFILES), 8)
+        for stage in PROGRESSIVE_257M_STAGES:
+            with self.subTest(stage=stage["name"], alignment="exact"):
+                geometry, plan, parameters, profile = tucker_benchmark_plan(
+                    "257m", f"progressive_{stage['name']}_exact"
+                )
+                self.assertEqual(geometry["intermediate_size"], 2816)
+                self.assertEqual(parameters, expected_exact[stage["name"]])
+                self.assertEqual(profile["alignment"], "exact")
+                self.assertTrue(
+                    any(rank % 8 for ranks in plan.values() for rank in ranks)
+                )
+            with self.subTest(stage=stage["name"], alignment="rank8"):
+                geometry, plan, parameters, profile = tucker_benchmark_plan(
+                    "257m", f"progressive_{stage['name']}_rank8"
+                )
+                self.assertEqual(geometry["intermediate_size"], 2816)
+                self.assertEqual(profile["alignment"], "rank8")
+                self.assertTrue(
+                    all(rank % 8 == 0 for ranks in plan.values() for rank in ranks)
+                )
+                relative_error = abs(parameters - stage["target_parameters"]) / stage[
+                    "target_parameters"
                 ]
                 self.assertLess(relative_error, 3e-4)
 

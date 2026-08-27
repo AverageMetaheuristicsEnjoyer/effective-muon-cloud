@@ -45,8 +45,7 @@ from scripts.tucker_benchmark.common import (  # noqa: E402
     model_geometry,
     requested_controls,
     summarize,
-    tucker_model_geometry,
-    tucker_rank_plan,
+    tucker_benchmark_plan,
     variant_spec,
 )
 from third_party.lite.muonlite import MuonLite  # noqa: E402
@@ -57,12 +56,14 @@ TUCKER_VARIANTS = {"tucker_reference", "tucker_parallel"}
 
 def make_config(args) -> SimpleNamespace:
     is_tucker = args.variant in TUCKER_VARIANTS
-    geometry = (
-        tucker_model_geometry(args.model_size)
-        if is_tucker
-        else model_geometry(args.model_size)
-    )
-    rank_plan, tucker_parameters = tucker_rank_plan(args.model_size)
+    if is_tucker:
+        geometry, rank_plan, tucker_parameters, _ = tucker_benchmark_plan(
+            args.model_size, args.tucker_rank_profile
+        )
+    else:
+        geometry = model_geometry(args.model_size)
+        rank_plan = None
+        tucker_parameters = geometry["dense_parameters"]
     return SimpleNamespace(
         model="llama",
         vocab_size=50_304,
@@ -87,9 +88,12 @@ def make_config(args) -> SimpleNamespace:
         tucker_attention_ranks=None,
         tucker_gate_up_ranks=None,
         tucker_down_ranks=None,
-        tucker_rank_plan=rank_plan if is_tucker else None,
+        tucker_rank_plan=rank_plan,
         tucker_mode_multiple=(
-            1 if args.model_size in FAST_ISO_FFN_WIDTHS else TUCKER_RANK_MULTIPLE
+            1
+            if args.tucker_rank_profile != "iso"
+            or args.model_size in FAST_ISO_FFN_WIDTHS
+            else TUCKER_RANK_MULTIPLE
         ),
         tucker_terms=1,
         tucker_equal_params=False,
@@ -100,8 +104,10 @@ def make_config(args) -> SimpleNamespace:
         tucker_retract_every_step=is_tucker,
         tucker_vector_transport=False,
         tucker_riemannian_muon=False,
-        target_parameter_count=geometry["dense_parameters"],
-        target_parameter_tolerance=abs(tucker_parameters - geometry["dense_parameters"]),
+        target_parameter_count=(
+            tucker_parameters if is_tucker else geometry["dense_parameters"]
+        ),
+        target_parameter_tolerance=0,
         dtype="bfloat16",
         device="cuda",
         liger_kernels=True,
@@ -392,14 +398,15 @@ def run(args) -> dict:
     torch.backends.cudnn.allow_tf32 = True
 
     variant = variant_spec(args.variant)
-    geometry = (
-        tucker_model_geometry(args.model_size)
-        if args.variant in TUCKER_VARIANTS
-        else model_geometry(args.model_size)
-    )
+    if args.variant in TUCKER_VARIANTS:
+        geometry, _, tucker_parameters, _ = tucker_benchmark_plan(
+            args.model_size, args.tucker_rank_profile
+        )
+    else:
+        geometry = model_geometry(args.model_size)
+        tucker_parameters = geometry["dense_parameters"]
     model, optimizer, post_step, optimizer_split = build_model_and_optimizer(args, device)
     actual_parameters = sum(parameter.numel() for parameter in model.parameters())
-    _, tucker_parameters = tucker_rank_plan(args.model_size)
     expected_parameters = (
         tucker_parameters if args.variant in TUCKER_VARIANTS else geometry["dense_parameters"]
     )
@@ -483,6 +490,9 @@ def run(args) -> dict:
             "dense_parameters": geometry["dense_parameters"],
             "actual_parameters": actual_parameters,
             "parameter_difference_from_dense": actual_parameters - geometry["dense_parameters"],
+            "tucker_rank_profile": (
+                args.tucker_rank_profile if args.variant in TUCKER_VARIANTS else None
+            ),
             "dense_lm_head": isinstance(model.lm_head, torch.nn.Linear),
             "tucker_forward_modes": (
                 dict(tucker_stats.forward_modes) if tucker_stats is not None else None
@@ -537,6 +547,7 @@ def parse_args():
     parser.add_argument("--variant", required=True, choices=[item["name"] for item in VARIANTS])
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--model-size", required=True, choices=[item["name"] for item in MODEL_SPECS])
+    parser.add_argument("--tucker-rank-profile", default="iso")
     parser.add_argument("--exclusive-gpu", action="store_true")
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument("--microbatch", type=int, default=1)
