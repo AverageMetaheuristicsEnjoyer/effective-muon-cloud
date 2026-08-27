@@ -5,7 +5,7 @@ ROOT=${TUCKER_LATE_ROOT:-/workspace-SR006.nfs3/tucker-late-growth-20260827}
 PYTHON_DEPS="${ROOT}/python"
 mkdir -p "${ROOT}/logs" "${ROOT}/exps" "${ROOT}/evals_cache" "${ROOT}/hf-cache" "${PYTHON_DEPS}"
 export PYTHONNOUSERSITE=1
-export PYTHONPATH=".:src"
+export PYTHONPATH="${PYTHON_DEPS}:.:src"
 export HF_HOME="${ROOT}/hf-cache"
 
 MODE=${1:-preflight}
@@ -42,10 +42,16 @@ for name in ("datasets", "huggingface_hub", "liger_kernel", "loguru", "pyarrow",
 print(f"torch={torch.__version__} cuda={torch.cuda.is_available()} devices={torch.cuda.device_count()}")
 print(f"wandb_api_key_present={bool(os.environ.get('WANDB_API_KEY'))}")
 PY
-    exit 0
 fi
 
+if ! python -c "import loguru, schedulefree, tiktoken, wandb" 2>/dev/null; then
+    pip install --target "${PYTHON_DEPS}" -q --no-deps \
+        loguru==0.7.3 schedulefree tiktoken==0.12.0 wandb==0.25.1
+fi
 python -c "import datasets, huggingface_hub, loguru, pyarrow, schedulefree, tiktoken, transformers, wandb, zstandard"
+if [[ "${MODE}" == "preflight" ]]; then
+    exit 0
+fi
 
 if [[ "${MODE}" == "correctness" ]]; then
     python -m unittest tests.test_progressive_tucker tests.test_tucker_chunked
