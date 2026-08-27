@@ -60,6 +60,30 @@ if ! python -c "import loguru, schedulefree, sentry_sdk, tiktoken, wandb" 2>/dev
     pip install --target "${PYTHON_DEPS}" -q --no-deps \
         loguru==0.7.3 schedulefree sentry-sdk tiktoken==0.12.0 wandb==0.25.1
 fi
+if ! python -c "import importlib.metadata; assert importlib.metadata.version('ai2-olmo-eval') == '0.8.5'; from olmo_eval import HFTokenizer, ICLMetric, build_task" 2>/dev/null; then
+    pip install --target "${PYTHON_DEPS}" -q --no-deps --upgrade \
+        ai2-olmo-eval==0.8.5 torchmetrics==1.8.2 lightning-utilities==0.15.2 \
+        cached-path==1.8.10 rich==13.9.4
+fi
+python - "${PYTHON_DEPS}" <<'PY'
+import importlib.metadata
+import sys
+from pathlib import Path
+
+import torch
+from olmo_eval import HFTokenizer, ICLMetric, build_task
+
+python_deps = Path(sys.argv[1]).resolve()
+torch_path = Path(torch.__file__).resolve()
+if torch.__version__.split("+", 1)[0] != "2.8.0":
+    raise RuntimeError(f"Expected system torch 2.8.0, found {torch.__version__} at {torch_path}")
+if torch_path.is_relative_to(python_deps):
+    raise RuntimeError(f"Refusing shadow torch installation at {torch_path}")
+if importlib.metadata.version("ai2-olmo-eval") != "0.8.5":
+    raise RuntimeError("Expected ai2-olmo-eval==0.8.5")
+print(f"torch={torch.__version__} path={torch_path}")
+print("ai2-olmo-eval=0.8.5 import=ok")
+PY
 python -c "import datasets, huggingface_hub, loguru, pyarrow, schedulefree, sentry_sdk, tiktoken, transformers, wandb, zstandard"
 if [[ "${MODE}" == "preflight" ]]; then
     WANDB_MODE=offline WANDB_DIR="${ROOT}/wandb" python - <<'PY'
@@ -67,6 +91,103 @@ import wandb
 
 run = wandb.init(project="tucker-cloud-preflight")
 run.finish()
+PY
+    exit 0
+fi
+
+if [[ "${MODE}" == "resume-preflight" ]]; then
+    python - "${ROOT}" <<'PY'
+import sys
+from pathlib import Path
+
+import torch
+
+root = Path(sys.argv[1])
+experiments = {
+    "225": "llama257m_tucker_late_225m_to_257m_customfb_bs16acc8_run2",
+    "169": "llama257m_tucker_late_169m_to_257m_customfb_bs16acc8_run1",
+}
+for arm, experiment in experiments.items():
+    ckpt_root = root / "exps" / "1xChinchilla-tucker-retract" / experiment / "ckpts"
+    for name in ("latest", "best_val"):
+        ckpt_dir = ckpt_root / name
+        sizes = {
+            path.name: path.stat().st_size
+            for path in (ckpt_dir / "main.pt", ckpt_dir / "worker_0.pt")
+            if path.is_file()
+        }
+        print(f"arm={arm} checkpoint={name} sizes={sizes}")
+
+    latest = ckpt_root / "latest"
+    main = torch.load(latest / "main.pt", map_location="cpu", weights_only=False)
+    worker = torch.load(latest / "worker_0.pt", map_location="cpu", weights_only=False)
+    if int(main["itr"]) != 2000:
+        raise RuntimeError(f"arm={arm}: expected iter 2000, found {main['itr']}")
+    if "train_reader_state" not in worker:
+        raise RuntimeError(f"arm={arm}: checkpoint has no FineWeb reader state")
+    print(f"arm={arm} latest_iter={main['itr']} load=ok reader_state=ok")
+    del main, worker
+PY
+    exit 0
+fi
+
+if [[ "${MODE}" == "archive-225" || "${MODE}" == "archive-169" ]]; then
+    python - "${ROOT}" "${MODE#archive-}" <<'PY'
+import os
+import shutil
+import sys
+from pathlib import Path
+
+import torch
+from huggingface_hub import HfApi
+
+root = Path(sys.argv[1])
+arm = sys.argv[2]
+experiments = {
+    "225": "llama257m_tucker_late_225m_to_257m_customfb_bs16acc8_run2",
+    "169": "llama257m_tucker_late_169m_to_257m_customfb_bs16acc8_run1",
+}
+repo_id = os.environ["HF_CHECKPOINT_REPO"]
+token = os.environ["HF_TOKEN"]
+ckpt_root = root / "exps" / "1xChinchilla-tucker-retract" / experiments[arm] / "ckpts"
+latest = ckpt_root / "latest"
+main_path = latest / "main.pt"
+worker_path = latest / "worker_0.pt"
+before = {path.name: (path.stat().st_size, path.stat().st_mtime_ns) for path in (main_path, worker_path)}
+main = torch.load(main_path, map_location="cpu", weights_only=False)
+worker = torch.load(worker_path, map_location="cpu", weights_only=False)
+iteration = int(main["itr"])
+if "train_reader_state" not in worker:
+    raise RuntimeError("Checkpoint has no FineWeb reader state")
+del main, worker
+
+path_in_repo = f"{arm}/iter_{iteration:08d}"
+api = HfApi(token=token)
+commit = api.upload_folder(
+    folder_path=latest,
+    path_in_repo=path_in_repo,
+    repo_id=repo_id,
+    repo_type="model",
+    commit_message=f"Archive {arm} arm checkpoint at iter {iteration}",
+)
+repo_files = set(api.list_repo_files(repo_id=repo_id, repo_type="model"))
+expected = {f"{path_in_repo}/main.pt", f"{path_in_repo}/worker_0.pt"}
+if not expected.issubset(repo_files):
+    raise RuntimeError(f"HF upload verification failed: missing {sorted(expected - repo_files)}")
+after = {path.name: (path.stat().st_size, path.stat().st_mtime_ns) for path in (main_path, worker_path)}
+if after != before:
+    raise RuntimeError("Checkpoint changed during upload; keeping local files")
+
+shutil.rmtree(latest)
+best_val = ckpt_root / "best_val"
+best_main = best_val / "main.pt"
+if best_main.is_file():
+    best = torch.load(best_main, map_location="meta", weights_only=False)
+    best_iteration = int(best["itr"])
+    del best
+    if best_iteration == iteration:
+        shutil.rmtree(best_val)
+print(f"archived arm={arm} iter={iteration} commit={commit.oid} local_deleted=true")
 PY
     exit 0
 fi
@@ -87,7 +208,7 @@ case "${MODE}" in
         export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
-    *) echo "Expected mode: preflight, repair-python, peek, disk, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
+    *) echo "Expected mode: preflight, resume-preflight, archive-225, archive-169, repair-python, peek, disk, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"
