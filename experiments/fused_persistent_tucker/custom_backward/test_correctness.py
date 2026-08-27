@@ -78,6 +78,21 @@ def main():
         for name, expected in ref_grads.items():
             _assert_close(f"{policy}.{name}", grads[name], expected, 3e-2, 3e-2)
 
+    # Real Llama embeddings stay FP32 under autocast. The custom path must cast
+    # both activations and Tucker work tensors to the active autocast dtype.
+    fp32_module = copy.deepcopy(base)
+    fp32_x = torch.randn(
+        64, 1024, device="cuda", dtype=torch.float32
+    ).requires_grad_(True)
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        fp32_y = custom_tucker_linear(
+            fp32_x, fp32_module, 16384, cache_policy="recast"
+        )
+        fp32_loss = fp32_y.float().square().mean()
+    fp32_loss.backward()
+    if fp32_y.dtype != torch.bfloat16 or not torch.isfinite(fp32_x.grad).all():
+        raise AssertionError("FP32-input autocast path produced an invalid result")
+
     # Both asymmetric production shapes must use the same exact VJP.
     for in_features, out_features in ((1024, 2816), (2816, 1024)):
         production = TuckerLinear(
