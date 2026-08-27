@@ -54,7 +54,12 @@ fi
 case "${MODE}" in
     225) LAUNCHER=scripts/launch_tucker225_to_257_late_custom_backward.sh ;;
     169) LAUNCHER=scripts/launch_tucker169_to_257_late_custom_backward.sh ;;
-    *) echo "Expected mode: preflight, correctness, 225, or 169" >&2; exit 2 ;;
+    smoke225)
+        LAUNCHER=scripts/launch_tucker225_to_257_late_custom_backward.sh
+        export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
+        export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
+        ;;
+    *) echo "Expected mode: preflight, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"

@@ -49,6 +49,8 @@ BATCH_SIZE=${BATCH_SIZE:-16}
 ACC_STEPS=${ACC_STEPS:-8}
 EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-16}
 EVAL_BATCHES=${EVAL_BATCHES:-32}
+DOWNSTREAM_EVAL_ENABLED=${DOWNSTREAM_EVAL_ENABLED:-1}
+LM_EVAL_ENABLED=${LM_EVAL_ENABLED:-1}
 LOG_INTERVAL=${LOG_INTERVAL:-50}
 SINGLE_PROCESS=${SINGLE_PROCESS:-0}
 TUCKER_PROGRESSIVE_STAGES=${TUCKER_PROGRESSIVE_STAGES:-""}
@@ -84,6 +86,8 @@ TUCKER_LR_SCALING_ARGS=(
     --tucker-lr-scaling-log-interval "${TUCKER_LR_SCALING_LOG_INTERVAL}"
 )
 BEST_VAL_CHECKPOINT_ARGS=()
+DOWNSTREAM_EVAL_ARGS=()
+LM_EVAL_ARGS=()
 WANDB_TAGS=(
     bf16 tensorion muon adamw streaming standard-attention tucker qr-retract "${WEIGHT_DECAY_TAG}"
 )
@@ -150,6 +154,20 @@ fi
 if [[ "${SAVE_BEST_VAL_CHECKPOINT}" == "1" ]]; then
     BEST_VAL_CHECKPOINT_ARGS+=(--save-best-val-checkpoint)
     WANDB_TAGS+=(best-val-checkpoint)
+fi
+if [[ "${DOWNSTREAM_EVAL_ENABLED}" == "1" ]]; then
+    DOWNSTREAM_EVAL_ARGS=(
+        --downstream-eval-enabled
+        --downstream-eval-interval 2000
+        --downstream-task-group basic_v2
+    )
+fi
+if [[ "${LM_EVAL_ENABLED}" == "1" ]]; then
+    LM_EVAL_ARGS=(
+        --lm-eval-enabled
+        --lm-eval-interval 2000
+        --lm-eval-datasets wikitext103
+    )
 fi
 
 TRAIN_COMMAND=(
@@ -235,12 +253,8 @@ fi
     --eval-interval 500 \
     --eval-batches "${EVAL_BATCHES}" \
     --eval-batch-size "${EVAL_BATCH_SIZE}" \
-    --downstream-eval-enabled \
-    --downstream-eval-interval 2000 \
-    --downstream-task-group basic_v2 \
-    --lm-eval-enabled \
-    --lm-eval-interval 2000 \
-    --lm-eval-datasets wikitext103 \
+    ${DOWNSTREAM_EVAL_ARGS[@]+"${DOWNSTREAM_EVAL_ARGS[@]}"} \
+    ${LM_EVAL_ARGS[@]+"${LM_EVAL_ARGS[@]}"} \
     --log-interval "${LOG_INTERVAL}" \
     --stable-rank-interval 50 \
     --spectrum-interval 1000 \
