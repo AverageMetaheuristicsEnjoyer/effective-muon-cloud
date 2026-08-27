@@ -92,18 +92,14 @@ class TuckerBenchmarkTest(unittest.TestCase):
 
         self.assertEqual(
             sum(parameter.numel() for parameter in model.parameters()),
-            257_249_152,
+            257_155_584,
         )
+        self.assertEqual(config.ffn_hidden_size, 3072)
         modules = [module for module in model.modules() if isinstance(module, TuckerLinear)]
         self.assertEqual(len(modules), 84)
         self.assertIsInstance(model.lm_head, torch.nn.Linear)
-        self.assertTrue(
-            all(
-                value % 8 == 0
-                for module in modules
-                for value in (*module.modes, *module.ranks)
-            )
-        )
+        self.assertTrue(all(rank % 8 == 0 for module in modules for rank in module.ranks))
+        self.assertTrue(all(max(module.modes) <= 64 for module in modules))
 
 
 if __name__ == "__main__":

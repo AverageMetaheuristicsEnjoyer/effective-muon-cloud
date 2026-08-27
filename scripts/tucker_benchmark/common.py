@@ -20,8 +20,9 @@ VARIANTS = (
 MICROBATCHES = (1, 2, 4, 8, 16)
 DEFAULT_SEQUENCE_LENGTH = 1024
 DEFAULT_TOKENS_PER_STEP = 16_384
-HARNESS_REVISION = 4
+HARNESS_REVISION = 5
 TUCKER_RANK_MULTIPLE = 8
+FAST_ISO_FFN_WIDTHS = {"257m": 3072}
 
 
 def model_geometry(name: str) -> dict:
@@ -38,6 +39,20 @@ def model_geometry(name: str) -> dict:
         "intermediate_size": intermediate_size,
         "dense_parameters": spec["dense_params_expected"],
     }
+
+
+def tucker_model_geometry(name: str) -> dict:
+    geometry = model_geometry(name)
+    if name in FAST_ISO_FFN_WIDTHS:
+        geometry["intermediate_size"] = FAST_ISO_FFN_WIDTHS[name]
+    return geometry
+
+
+def _factor_pair(value: int) -> tuple[int, int]:
+    left = math.isqrt(value)
+    while value % left:
+        left -= 1
+    return left, value // left
 
 
 def _aligned_factor_pair(value: int, multiple: int) -> tuple[int, int]:
@@ -64,13 +79,15 @@ def _tucker_parameter_count(
 
 def _tucker_module_shapes(geometry: dict) -> list[tuple[str, int, int]]:
     modules = []
-    for layer in range(geometry["n_layer"]):
-        prefix = f"transformer.h.{layer}"
-        for projection in ("q_proj", "k_proj", "v_proj", "o_proj"):
+    for projection in ("q_proj", "k_proj", "v_proj", "o_proj"):
+        for layer in range(geometry["n_layer"]):
+            prefix = f"transformer.h.{layer}"
             modules.append(
                 (f"{prefix}.attn.{projection}", geometry["n_embd"], geometry["n_embd"])
             )
-        for projection in ("gate_proj", "up_proj"):
+    for projection in ("gate_proj", "up_proj"):
+        for layer in range(geometry["n_layer"]):
+            prefix = f"transformer.h.{layer}"
             modules.append(
                 (
                     f"{prefix}.mlp.{projection}",
@@ -78,6 +95,8 @@ def _tucker_module_shapes(geometry: dict) -> list[tuple[str, int, int]]:
                     geometry["intermediate_size"],
                 )
             )
+    for layer in range(geometry["n_layer"]):
+        prefix = f"transformer.h.{layer}"
         modules.append(
             (
                 f"{prefix}.mlp.down_proj",
@@ -89,23 +108,33 @@ def _tucker_module_shapes(geometry: dict) -> list[tuple[str, int, int]]:
 
 
 def tucker_rank_plan(name: str) -> tuple[dict[str, tuple[int, int, int, int]], int]:
-    geometry = model_geometry(name)
+    dense_geometry = model_geometry(name)
+    geometry = tucker_model_geometry(name)
     modules = _tucker_module_shapes(geometry)
     full_plan = {}
     full_tucker_parameters = 0
-    dense_replaced_parameters = 0
+    dense_replaced_parameters = sum(
+        in_features * out_features
+        for _, in_features, out_features in _tucker_module_shapes(dense_geometry)
+    )
     candidates = []
 
-    for module_name, in_features, out_features in modules:
-        modes = (
-            *_aligned_factor_pair(in_features, TUCKER_RANK_MULTIPLE),
-            *_aligned_factor_pair(out_features, TUCKER_RANK_MULTIPLE),
-        )
-        full_ranks = tuple(modes)
+    for module_index, (module_name, in_features, out_features) in enumerate(modules):
+        if name in FAST_ISO_FFN_WIDTHS:
+            modes = (*_factor_pair(in_features), *_factor_pair(out_features))
+            full_ranks = tuple(
+                mode // TUCKER_RANK_MULTIPLE * TUCKER_RANK_MULTIPLE
+                for mode in modes
+            )
+        else:
+            modes = (
+                *_aligned_factor_pair(in_features, TUCKER_RANK_MULTIPLE),
+                *_aligned_factor_pair(out_features, TUCKER_RANK_MULTIPLE),
+            )
+            full_ranks = tuple(modes)
         full_count = _tucker_parameter_count(modes, full_ranks)
         full_plan[module_name] = full_ranks
         full_tucker_parameters += full_count
-        dense_replaced_parameters += in_features * out_features
 
         reductions = []
         for rank_index, rank in enumerate(full_ranks):
@@ -119,15 +148,17 @@ def tucker_rank_plan(name: str) -> tuple[dict[str, tuple[int, int, int, int]], i
                     tuple(reduced),
                 )
             )
-        reduction, reduced_ranks = min(reductions)
+        minimum = min(reduction for reduction, _ in reductions)
+        tied = [item for item in reductions if item[0] == minimum]
+        reduction, reduced_ranks = tied[module_index % len(tied)]
         candidates.append((module_name, reduction, reduced_ranks))
 
     full_model_parameters = (
-        geometry["dense_parameters"]
+        dense_geometry["dense_parameters"]
         - dense_replaced_parameters
         + full_tucker_parameters
     )
-    excess = full_model_parameters - geometry["dense_parameters"]
+    excess = full_model_parameters - dense_geometry["dense_parameters"]
     limit = excess + max(reduction for _, reduction, _ in candidates)
     reachable: dict[int, tuple[int, ...]] = {0: ()}
     for index, (_, reduction, _) in enumerate(candidates):
@@ -141,8 +172,8 @@ def tucker_rank_plan(name: str) -> tuple[dict[str, tuple[int, int, int, int]], i
     selected_reduction = min(
         reachable,
         key=lambda reduction: (
-            abs(full_model_parameters - reduction - geometry["dense_parameters"]),
-            full_model_parameters - reduction > geometry["dense_parameters"],
+            abs(full_model_parameters - reduction - dense_geometry["dense_parameters"]),
+            full_model_parameters - reduction > dense_geometry["dense_parameters"],
             full_model_parameters - reduction,
         ),
     )
@@ -194,7 +225,9 @@ def requested_controls(args, microbatch: int, accumulation: int) -> dict:
         "exclusive_gpu": args.exclusive_gpu,
         "model_size": args.model_size,
         "tucker_rank_multiple": TUCKER_RANK_MULTIPLE,
-        "tucker_mode_multiple": TUCKER_RANK_MULTIPLE,
+        "tucker_mode_multiple": (
+            1 if args.model_size in FAST_ISO_FFN_WIDTHS else TUCKER_RANK_MULTIPLE
+        ),
         "tucker_parameters": tucker_parameters,
         "tucker_forward_mode": "chunked_contract",
         "tucker_contract_chunk_size": microbatch * args.sequence_length,

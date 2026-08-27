@@ -36,6 +36,7 @@ from models.tucker_linear import TuckerLinear, retract_tucker_modules_  # noqa: 
 from models.utils import get_model  # noqa: E402
 from scripts.tucker_benchmark.common import (  # noqa: E402
     DEFAULT_SEQUENCE_LENGTH,
+    FAST_ISO_FFN_WIDTHS,
     MODEL_SPECS,
     TUCKER_RANK_MULTIPLE,
     VARIANTS,
@@ -44,6 +45,7 @@ from scripts.tucker_benchmark.common import (  # noqa: E402
     model_geometry,
     requested_controls,
     summarize,
+    tucker_model_geometry,
     tucker_rank_plan,
     variant_spec,
 )
@@ -55,7 +57,11 @@ TUCKER_VARIANTS = {"tucker_reference", "tucker_parallel"}
 
 def make_config(args) -> SimpleNamespace:
     is_tucker = args.variant in TUCKER_VARIANTS
-    geometry = model_geometry(args.model_size)
+    geometry = (
+        tucker_model_geometry(args.model_size)
+        if is_tucker
+        else model_geometry(args.model_size)
+    )
     rank_plan, tucker_parameters = tucker_rank_plan(args.model_size)
     return SimpleNamespace(
         model="llama",
@@ -82,7 +88,9 @@ def make_config(args) -> SimpleNamespace:
         tucker_gate_up_ranks=None,
         tucker_down_ranks=None,
         tucker_rank_plan=rank_plan if is_tucker else None,
-        tucker_mode_multiple=TUCKER_RANK_MULTIPLE,
+        tucker_mode_multiple=(
+            1 if args.model_size in FAST_ISO_FFN_WIDTHS else TUCKER_RANK_MULTIPLE
+        ),
         tucker_terms=1,
         tucker_equal_params=False,
         tucker_forward_mode="chunked_contract",
@@ -112,9 +120,10 @@ def instantiate_model(config: SimpleNamespace, device: torch.device):
     original_factor_pair = tucker_linear_module.balanced_factor_pair
     try:
         if rank_plan is not None:
-            tucker_linear_module.balanced_factor_pair = lambda value: _aligned_factor_pair(
-                value, TUCKER_RANK_MULTIPLE
-            )
+            if config.tucker_mode_multiple > 1:
+                tucker_linear_module.balanced_factor_pair = lambda value: _aligned_factor_pair(
+                    value, TUCKER_RANK_MULTIPLE
+                )
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as handle:
                 json.dump({"module_ranks": rank_plan}, handle)
                 handle.flush()
@@ -383,7 +392,11 @@ def run(args) -> dict:
     torch.backends.cudnn.allow_tf32 = True
 
     variant = variant_spec(args.variant)
-    geometry = model_geometry(args.model_size)
+    geometry = (
+        tucker_model_geometry(args.model_size)
+        if args.variant in TUCKER_VARIANTS
+        else model_geometry(args.model_size)
+    )
     model, optimizer, post_step, optimizer_split = build_model_and_optimizer(args, device)
     actual_parameters = sum(parameter.numel() for parameter in model.parameters())
     _, tucker_parameters = tucker_rank_plan(args.model_size)

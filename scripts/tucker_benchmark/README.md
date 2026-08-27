@@ -5,7 +5,10 @@ Dense AdamW, Dense Muon, the archive's reference Tucker path, and its new
 custom-backward + parallel-Muon + grouped-retraction path. The internal Tucker
 linears use per-layer rank plans that keep the whole model within 0.03% of its
 dense counterpart. Every selected rank and every mode is divisible by 8; the
-hidden dimension and dense `lm_head` are unchanged.
+hidden dimension and dense `lm_head` are unchanged. For the 257M iso-parameter
+Tucker variants, the FFN width is 3072 instead of the dense baseline's 2816;
+this keeps the natural 32x32 and 48x64 mode pairs on the fused path while all
+ranks remain divisible by 8.
 
 The common contract is sequence length 1024, 16,384 tokens per optimizer step,
 microbatches 1/2/4/8/16, FP32 master parameters and optimizer state, BF16
