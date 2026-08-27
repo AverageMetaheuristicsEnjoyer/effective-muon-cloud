@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT=${TUCKER_LATE_ROOT:-/workspace-SR006.nfs3/tucker-late-growth-20260827}
 PYTHON_DEPS="${ROOT}/python"
 mkdir -p "${ROOT}/logs" "${ROOT}/exps" "${ROOT}/evals_cache" "${ROOT}/hf-cache" "${PYTHON_DEPS}"
-export PYTHONPATH="${PYTHON_DEPS}:/workspace-SR006.nfs3/tucker-membench/python:.:src"
+export PYTHONNOUSERSITE=1
+export PYTHONPATH=".:src"
 export HF_HOME="${ROOT}/hf-cache"
 
 MODE=${1:-preflight}
@@ -45,9 +46,6 @@ PY
 fi
 
 python -c "import datasets, huggingface_hub, loguru, pyarrow, schedulefree, tiktoken, transformers, wandb, zstandard"
-if ! python -c "import liger_kernel" 2>/dev/null; then
-    pip install --target "${PYTHON_DEPS}" -q --no-deps liger-kernel==0.8.1
-fi
 
 if [[ "${MODE}" == "correctness" ]]; then
     python -m unittest tests.test_progressive_tucker tests.test_tucker_chunked
