@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from contextlib import contextmanager
 import gc
 import json
 import sys
@@ -24,13 +25,22 @@ from main import get_args
 from models.tucker_linear import TuckerLinear
 from models.utils import get_model
 from optim.progressive_tucker import (
-    _exact_fp32_matmul,
     _tucker_modules,
     build_progressive_rank_stages,
     expand_tucker_model_to_plan_,
     parse_progressive_stages,
     restore_progressive_tucker_shapes_,
 )
+
+
+@contextmanager
+def tf32(enabled):
+    previous = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = enabled
+    try:
+        yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous
 
 
 def model_args(architecture):
@@ -135,11 +145,14 @@ def main():
     )
 
     modules = _tucker_modules(model)
+    before_tf32 = {}
     before_fp32 = {}
     before_fp64 = {}
     old_parameters = {}
     for name, module in modules.items():
-        with _exact_fp32_matmul():
+        with tf32(True):
+            before_tf32[name] = module.materialize_weight(dtype=torch.float32).cpu()
+        with tf32(False):
             before_fp32[name] = module.materialize_weight(dtype=torch.float32).cpu()
         before_fp64[name] = module.materialize_weight(dtype=torch.float64).cpu()
         old_parameters[name] = {
@@ -159,7 +172,10 @@ def main():
         generator=generator,
         device=cfg.device,
     )
-    before_logits_fp32 = logits(model, tokens, bf16=False)
+    with tf32(True):
+        before_logits_tf32 = logits(model, tokens, bf16=False)
+    with tf32(False):
+        before_logits_fp32 = logits(model, tokens, bf16=False)
     before_logits_bf16 = logits(model, tokens, bf16=True)
 
     expansion = expand_tucker_model_to_plan_(
@@ -174,9 +190,12 @@ def main():
     parameter_copy_ok = True
     new_core_zero = True
     for name, module in modules.items():
-        with _exact_fp32_matmul():
+        with tf32(True):
+            after_tf32 = module.materialize_weight(dtype=torch.float32)
+        with tf32(False):
             after32 = module.materialize_weight(dtype=torch.float32)
         after64 = module.materialize_weight(dtype=torch.float64)
+        error_tf32 = tensor_error(before_tf32.pop(name).to(cfg.device), after_tf32)
         error32 = tensor_error(before_fp32.pop(name).to(cfg.device), after32)
         error64 = tensor_error(before_fp64.pop(name).to(cfg.device), after64)
 
@@ -206,18 +225,27 @@ def main():
                 "name": name,
                 "old_ranks": list(old_ranks),
                 "new_ranks": list(module.ranks),
+                "relative_tf32": error_tf32["relative"],
+                "max_absolute_tf32": error_tf32["max_absolute"],
                 "relative_fp32": error32["relative"],
                 "max_absolute_fp32": error32["max_absolute"],
                 "relative_fp64": error64["relative"],
                 "max_absolute_fp64": error64["max_absolute"],
             }
         )
-        del after32, after64, outside
+        del after_tf32, after32, after64, outside
 
-    after_logits_fp32 = logits(model, tokens, bf16=False)
+    with tf32(True):
+        after_logits_tf32 = logits(model, tokens, bf16=False)
+    with tf32(False):
+        after_logits_fp32 = logits(model, tokens, bf16=False)
     after_logits_bf16 = logits(model, tokens, bf16=True)
+    logits_tf32 = tensor_error(before_logits_tf32, after_logits_tf32)
     logits_fp32 = tensor_error(before_logits_fp32, after_logits_fp32)
     logits_bf16 = tensor_error(before_logits_bf16, after_logits_bf16)
+    logits_tf32["argmax_equal"] = bool(
+        torch.equal(before_logits_tf32.argmax(dim=-1), after_logits_tf32.argmax(dim=-1))
+    )
     logits_fp32["argmax_equal"] = bool(
         torch.equal(before_logits_fp32.argmax(dim=-1), after_logits_fp32.argmax(dim=-1))
     )
@@ -226,7 +254,7 @@ def main():
     )
 
     threshold = float(architecture["tucker_progressive_verify_rtol"])
-    failures = [row for row in layer_results if row["relative_fp32"] > threshold]
+    failures = [row for row in layer_results if row["relative_tf32"] > threshold]
     print(json.dumps({"event": "expansion", **expansion}, sort_keys=True))
     print(
         json.dumps(
@@ -238,7 +266,7 @@ def main():
             sort_keys=True,
         )
     )
-    for row in sorted(layer_results, key=lambda item: item["relative_fp32"], reverse=True)[:12]:
+    for row in sorted(layer_results, key=lambda item: item["relative_tf32"], reverse=True)[:12]:
         print(json.dumps({"event": "layer_error", **row}, sort_keys=True))
     print(
         json.dumps(
@@ -248,12 +276,14 @@ def main():
                 "layers_checked": len(layer_results),
                 "layers_over_threshold": len(failures),
                 "first_over_threshold": failures[0]["name"] if failures else None,
+                "max_relative_tf32": max(row["relative_tf32"] for row in layer_results),
                 "max_relative_fp32": max(row["relative_fp32"] for row in layer_results),
                 "max_relative_fp64": max(row["relative_fp64"] for row in layer_results),
             },
             sort_keys=True,
         )
     )
+    print(json.dumps({"event": "logits_tf32", **logits_tf32}, sort_keys=True))
     print(json.dumps({"event": "logits_fp32", **logits_fp32}, sort_keys=True))
     print(json.dumps({"event": "logits_bf16", **logits_bf16}, sort_keys=True))
 
