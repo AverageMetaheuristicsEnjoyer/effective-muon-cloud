@@ -506,8 +506,6 @@ def _validate_manifest_against_source(manifest: Manifest, source) -> None:
         cached = _validated_dataset_fingerprints.get(root_key)
     if cached == manifest.fingerprint:
         return
-    if getattr(source, "_legacy_manifest_fingerprint", None) == manifest.fingerprint:
-        return
     current = build_manifest_from_source(source)
     if current.fingerprint != manifest.fingerprint:
         raise ValueError(

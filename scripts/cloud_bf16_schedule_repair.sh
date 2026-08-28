@@ -216,34 +216,25 @@ run_repair() {
     case $arm in
         galore-1c|galore-2c)
             optimizer=galore_adamw
-            expected_world=2
             lr=1e-3
             weight_decay=0.1
             beta2=0.999
-            batch_size=32
-            acc_steps=4
             source_group=4C_2gpus
             source_name=fineweb_galore_adamw_lr1e-3_wd0.1_bf16_grad_clip1e0_4C
             ;;
         slim-adam-1c|slim-adam-2c)
             optimizer=slim_adam
-            expected_world=2
             lr=5e-4
             weight_decay=0.1
             beta2=0.999
-            batch_size=32
-            acc_steps=4
             source_group=4C_2gpus
             source_name=fineweb_slim_adam_lr5e-4_wd0.1_bf16_grad_clip1e0_4C
             ;;
         shampoo-1c|shampoo-2c)
             optimizer=shampoo
-            expected_world=8
             lr=1e-2
             weight_decay=0.01
             beta2=0.99
-            batch_size=16
-            acc_steps=8
             source_group=4C_8gpus
             source_name=fineweb_shampoo_lr1e-2_wd0.01_bf16_grad_clip1e0_4C
             ;;
@@ -257,10 +248,33 @@ run_repair() {
         *-1c) start=35325; target=39250; budget=1xC ;;
         *-2c) start=70650; target=78500; budget=2xC ;;
     esac
+    expected_world=8
+    batch_size=16
+    acc_steps=8
+    local warmup_steps=2000
+    local decay_fraction=0.1
+    local resume_args=()
     local smoke=0
     if [[ $mode == resume-smoke ]]; then
         smoke=1
+        if [[ $optimizer == shampoo ]]; then
+            expected_world=8
+            batch_size=16
+            acc_steps=8
+        else
+            expected_world=2
+            batch_size=32
+            acc_steps=4
+        fi
+        warmup_steps=0
+        decay_fraction=1
         target=$((start + 2))
+        local source_remote=intermediate-checkpoints/$source_group/$source_name/inter-ckpt-$start
+        local source_dir=$persist/hf-source/$source_remote
+        download_source "$source_remote" "$expected_world" || return 3
+        resume_args=(--resume-from "$source_dir" --decay-from-checkpoint)
+    else
+        start=0
     fi
     [[ $world_size == "$expected_world" ]] || {
         echo "ARM_WORLD_SIZE_MISMATCH arm=$arm expected=$expected_world actual=$world_size" >&2
@@ -270,11 +284,7 @@ run_repair() {
     report_disks
     nvidia-smi --query-gpu=index,name,uuid,compute_cap,memory.total,driver_version --format=csv,noheader
     echo "SOURCE_COMMIT=$(git -C "$root" rev-parse HEAD)"
-    echo "ARM_CONFIG arm=$arm optimizer=$optimizer start=$start target=$target world_size=$world_size schedule=wsd warmup=0 fract_decay=1 decay_type=cosine"
-
-    local source_remote=intermediate-checkpoints/$source_group/$source_name/inter-ckpt-$start
-    local source_dir=$persist/hf-source/$source_remote
-    download_source "$source_remote" "$expected_world" || return 3
+    echo "ARM_CONFIG arm=$arm optimizer=$optimizer start=$start target=$target world_size=$world_size schedule=wsd warmup=$warmup_steps fract_decay=$decay_fraction decay_type=cosine"
 
     local experiment=bf16_250m_${arm//-/_}_wsd_repair_${run_key}
     [[ $smoke == 1 ]] && experiment=smoke_${experiment}
@@ -312,7 +322,7 @@ run_repair() {
         --wandb-tags bf16 schedule-repair 250m "$budget" "$optimizer" cloudru
     )
     if [[ $smoke == 1 ]]; then
-        eval_args=(--eval-interval 500 --eval-batches 32 --log-interval 1)
+        eval_args=(--eval-interval 1 --eval-batches 1 --log-interval 1)
         output_args=(--no-local-save)
     fi
 
@@ -320,13 +330,12 @@ run_repair() {
     python src/main.py \
         --distributed-backend nccl \
         --experiment-name "$experiment" \
-        --resume-from "$source_dir" \
-        --decay-from-checkpoint \
+        "${resume_args[@]}" \
         --dataset fineweb \
         --fineweb-source hf \
         --fineweb-hf-repo-id HuggingFaceFW/fineweb-edu \
         --fineweb-hf-data-prefix sample/100BT \
-        --fineweb-hf-revision main \
+        --fineweb-hf-revision 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9 \
         --datasets-dir "$persist/datasets" \
         --eval-cache-dir "$persist/evals-cache" \
         --sequence-length 1024 \
@@ -347,9 +356,9 @@ run_repair() {
         --grad-clip 1.0 \
         "${optimizer_args[@]}" \
         --scheduler wsd \
-        --warmup-steps 0 \
+        --warmup-steps "$warmup_steps" \
         --iterations "$target" \
-        --wsd-fract-decay 1 \
+        --wsd-fract-decay "$decay_fraction" \
         --wsd-final-lr-scale 0 \
         --decay-type cosine \
         --batch-size "$batch_size" \
@@ -377,7 +386,6 @@ run_repair() {
         elif [[ ! -f $app_state.failed && $done_count -eq $world_size ]]; then
             local upload_path=intermediate-checkpoints/$group/$experiment/inter-ckpt-$target
             if upload_and_verify "$checkpoint_dir" "$upload_path"; then
-                rm -rf "$source_dir"
                 touch "$app_state.uploaded"
             else
                 touch "$app_state.failed"

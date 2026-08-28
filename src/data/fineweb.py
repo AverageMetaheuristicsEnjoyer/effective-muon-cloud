@@ -82,23 +82,6 @@ def _load_resume_train_reader_state(args, rank: int) -> dict[str, Any] | None:
     return train_reader_state if isinstance(train_reader_state, dict) else None
 
 
-def _legacy_resume_fingerprints(
-    resume_state: dict[str, Any] | None,
-) -> tuple[str, str] | None:
-    if not isinstance(resume_state, dict) or isinstance(
-        resume_state.get("source_metadata"), dict
-    ):
-        return None
-    stream_state = resume_state.get("stream_state")
-    if not isinstance(stream_state, dict):
-        return None
-    manifest_fingerprint = stream_state.get("manifest_fingerprint")
-    split_plan_fingerprint = stream_state.get("split_plan_fingerprint")
-    if not manifest_fingerprint or not split_plan_fingerprint:
-        return None
-    return str(manifest_fingerprint), str(split_plan_fingerprint)
-
-
 def _source_choice(args) -> str:
     return str(getattr(args, "fineweb_source", DEFAULT_FINEWEB_SOURCE))
 
@@ -402,14 +385,8 @@ def build_fineweb_readers(
 
     world_size = dist.get_world_size() if dist.is_initialized() else 1
     rank = dist.get_rank() if dist.is_initialized() else 0
-    resume_state = _load_resume_train_reader_state(args, rank)
     parquet_source = _resolve_parquet_source(args, rank=rank)
     manifest = build_manifest_from_source(parquet_source)
-    source_manifest_fingerprint = manifest.fingerprint
-    legacy_fingerprints = _legacy_resume_fingerprints(resume_state)
-    if legacy_fingerprints is not None and parquet_source.kind == "hf":
-        legacy_manifest_fingerprint, _ = legacy_fingerprints
-        object.__setattr__(manifest, "fingerprint", legacy_manifest_fingerprint)
     tokenizer_name = str(
         getattr(tokenizer, "name_or_path", None) or getattr(args, "tokenizer", "tokenizer")
     )
@@ -435,22 +412,6 @@ def build_fineweb_readers(
         split_plan = None
         val_blocks = None
     split_plan = _broadcast_split_plan(split_plan, rank=rank, world_size=world_size)
-
-    if legacy_fingerprints is not None and parquet_source.kind == "hf":
-        legacy_manifest_fingerprint, legacy_split_plan_fingerprint = legacy_fingerprints
-        if split_plan.fingerprint != legacy_split_plan_fingerprint:
-            raise ValueError(
-                "Legacy checkpoint split plan does not match the Hugging Face "
-                "FineWeb source."
-            )
-        parquet_source._legacy_manifest_fingerprint = legacy_manifest_fingerprint
-        if verbose and rank == 0:
-            print(
-                "FineWeb legacy resume verified: "
-                f"source_manifest={source_manifest_fingerprint} "
-                f"checkpoint_manifest={legacy_manifest_fingerprint} "
-                f"split_plan={legacy_split_plan_fingerprint}"
-            )
 
     train_reader = FineWebTrainReader(
         manifest,
