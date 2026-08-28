@@ -74,7 +74,7 @@ def model_args(architecture):
 @torch.inference_mode()
 def logits(model, tokens, *, bf16):
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16):
-        return model(tokens, get_logits=True)["logits"].float().cpu()
+        return model(tokens, get_logits=True)["logits"].float().squeeze(1).cpu()
 
 
 def tensor_error(before, after):
