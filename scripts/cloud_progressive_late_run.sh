@@ -199,6 +199,13 @@ if [[ "${MODE}" == "correctness" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "diagnose-169-growth" ]]; then
+    CKPT="${ROOT}/exps/1xChinchilla-tucker-retract/llama257m_tucker_late_169m_to_257m_customfb_bs16acc8_run1/ckpts/latest"
+    DIAGNOSTIC_LOG="${ROOT}/logs/diagnose-169-growth-$(date +%F_%H%M%S)-$$.log"
+    python scripts/diagnose_progressive_growth.py --checkpoint "${CKPT}" 2>&1 | tee "${DIAGNOSTIC_LOG}"
+    exit "${PIPESTATUS[0]}"
+fi
+
 case "${MODE}" in
     225) LAUNCHER=scripts/launch_tucker225_to_257_late_custom_backward.sh ;;
     169) LAUNCHER=scripts/launch_tucker169_to_257_late_custom_backward.sh ;;
@@ -208,7 +215,7 @@ case "${MODE}" in
         export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
-    *) echo "Expected mode: preflight, resume-preflight, archive-225, archive-169, repair-python, peek, disk, correctness, smoke225, 225, or 169" >&2; exit 2 ;;
+    *) echo "Expected mode: preflight, resume-preflight, archive-225, archive-169, repair-python, peek, disk, correctness, diagnose-169-growth, smoke225, 225, or 169" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"
