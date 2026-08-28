@@ -26,8 +26,10 @@ if [[ "${MODE}" == "repair-python" ]]; then
     exit 0
 fi
 
-if [[ "${MODE}" == "peek" ]]; then
-    newest=$(ls -t "${ROOT}"/logs/*.log 2>/dev/null | head -1)
+if [[ "${MODE}" == "peek" || "${MODE}" == "peek-225" || "${MODE}" == "peek-169" ]]; then
+    pattern="*.log"
+    [[ "${MODE}" != "peek" ]] && pattern="${MODE#peek-}-*.log"
+    newest=$(ls -t "${ROOT}"/logs/${pattern} 2>/dev/null | head -1)
     echo "latest log: ${newest:-none}"
     [[ -n "${newest}" ]] && tail -"${2:-200}" "${newest}"
     exit 0
