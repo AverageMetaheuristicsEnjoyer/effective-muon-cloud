@@ -242,7 +242,8 @@ def main():
         None,
         target.ranks,
         seed=int(architecture["tucker_progressive_seed"]) + (stage_index + 1) * 1_000_003,
-        verify_function=False,
+        verify_function=True,
+        verify_rtol=float(architecture["tucker_progressive_verify_rtol"]),
     )
 
     layer_results = []
