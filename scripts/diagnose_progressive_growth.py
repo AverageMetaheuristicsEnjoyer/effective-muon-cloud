@@ -10,7 +10,7 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-for path in (ROOT, ROOT / "src"):
+for path in (ROOT, ROOT / "src", ROOT / "experiments" / "fused_persistent_tucker"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
