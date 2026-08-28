@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,19 @@ def tf32(enabled):
         torch.backends.cuda.matmul.allow_tf32 = previous
 
 
+@contextmanager
+def tucker_forward_mode(model, mode):
+    modules = _tucker_modules(model)
+    previous = {name: module.resolved_forward_mode for name, module in modules.items()}
+    for module in modules.values():
+        module.resolved_forward_mode = mode
+    try:
+        yield
+    finally:
+        for name, module in modules.items():
+            module.resolved_forward_mode = previous[name]
+
+
 def model_args(architecture):
     original = sys.argv
     try:
@@ -71,6 +85,43 @@ def tensor_error(before, after):
         ),
         "max_absolute": float(delta.abs().max().cpu()),
     }
+
+
+def logit_error(before, after, targets):
+    result = tensor_error(before, after)
+    before_top1 = before.argmax(dim=-1)
+    after_top1 = after.argmax(dim=-1)
+    before_top10 = before.topk(10, dim=-1).indices
+    after_top10 = after.topk(10, dim=-1).indices
+    row_relative = torch.linalg.vector_norm(after - before, dim=-1) / torch.linalg.vector_norm(
+        before, dim=-1
+    ).clamp_min(1e-30)
+    before_log_probs = F.log_softmax(before, dim=-1)
+    after_log_probs = F.log_softmax(after, dim=-1)
+    result.update(
+        {
+            "top1_equal": int((before_top1 == after_top1).sum()),
+            "rows": int(before.shape[0]),
+            "top10_overlap_mean": float(
+                torch.stack(
+                    [
+                        torch.isin(left, right).float().mean()
+                        for left, right in zip(before_top10, after_top10)
+                    ]
+                ).mean()
+            ),
+            "row_relative_mean": float(row_relative.mean()),
+            "row_relative_max": float(row_relative.max()),
+            "kl_mean": float(
+                (
+                    before_log_probs.exp() * (before_log_probs - after_log_probs)
+                ).sum(dim=-1).mean()
+            ),
+            "nll_before": float(F.cross_entropy(before, targets)),
+            "nll_after": float(F.cross_entropy(after, targets)),
+        }
+    )
+    return result
 
 
 def main():
@@ -168,15 +219,23 @@ def main():
     generator.manual_seed(20260828)
     tokens = torch.randint(
         cfg.vocab_size,
-        (2, 128),
+        (8, 128),
         generator=generator,
         device=cfg.device,
     )
+    targets = torch.randint(
+        cfg.vocab_size,
+        (tokens.shape[0],),
+        generator=generator,
+        device=cfg.device,
+    ).cpu()
     with tf32(True):
         before_logits_tf32 = logits(model, tokens, bf16=False)
     with tf32(False):
         before_logits_fp32 = logits(model, tokens, bf16=False)
     before_logits_bf16 = logits(model, tokens, bf16=True)
+    with tucker_forward_mode(model, "materialize"), tf32(False):
+        before_logits_dense_bf16 = logits(model, tokens, bf16=True)
 
     expansion = expand_tucker_model_to_plan_(
         model,
@@ -240,17 +299,13 @@ def main():
     with tf32(False):
         after_logits_fp32 = logits(model, tokens, bf16=False)
     after_logits_bf16 = logits(model, tokens, bf16=True)
-    logits_tf32 = tensor_error(before_logits_tf32, after_logits_tf32)
-    logits_fp32 = tensor_error(before_logits_fp32, after_logits_fp32)
-    logits_bf16 = tensor_error(before_logits_bf16, after_logits_bf16)
-    logits_tf32["argmax_equal"] = bool(
-        torch.equal(before_logits_tf32.argmax(dim=-1), after_logits_tf32.argmax(dim=-1))
-    )
-    logits_fp32["argmax_equal"] = bool(
-        torch.equal(before_logits_fp32.argmax(dim=-1), after_logits_fp32.argmax(dim=-1))
-    )
-    logits_bf16["argmax_equal"] = bool(
-        torch.equal(before_logits_bf16.argmax(dim=-1), after_logits_bf16.argmax(dim=-1))
+    with tucker_forward_mode(model, "materialize"), tf32(False):
+        after_logits_dense_bf16 = logits(model, tokens, bf16=True)
+    logits_tf32 = logit_error(before_logits_tf32, after_logits_tf32, targets)
+    logits_fp32 = logit_error(before_logits_fp32, after_logits_fp32, targets)
+    logits_bf16 = logit_error(before_logits_bf16, after_logits_bf16, targets)
+    logits_dense_bf16 = logit_error(
+        before_logits_dense_bf16, after_logits_dense_bf16, targets
     )
 
     threshold = float(architecture["tucker_progressive_verify_rtol"])
@@ -286,6 +341,11 @@ def main():
     print(json.dumps({"event": "logits_tf32", **logits_tf32}, sort_keys=True))
     print(json.dumps({"event": "logits_fp32", **logits_fp32}, sort_keys=True))
     print(json.dumps({"event": "logits_bf16", **logits_bf16}, sort_keys=True))
+    print(
+        json.dumps(
+            {"event": "logits_dense_bf16", **logits_dense_bf16}, sort_keys=True
+        )
+    )
 
 
 if __name__ == "__main__":
