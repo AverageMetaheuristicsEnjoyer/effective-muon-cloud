@@ -15,11 +15,22 @@ unchanged at the instant of growth.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import math
 from typing import Iterable, Mapping, Sequence
 
 import torch
+
+
+@contextmanager
+def _exact_fp32_matmul():
+    previous = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous
 
 
 RankTuple = tuple[int, int, int, int]
@@ -405,11 +416,12 @@ def expand_tucker_model_to_plan_(
         ):
             raise RuntimeError("Tucker ranks may only grow between optimizer steps")
 
-        before = (
-            module.materialize_weight(dtype=torch.float32)
-            if verify_function
-            else None
-        )
+        with _exact_fp32_matmul():
+            before = (
+                module.materialize_weight(dtype=torch.float32)
+                if verify_function
+                else None
+            )
         factors = (module.U1, module.U2, module.U3, module.U4)
         for mode_index, (factor, target_rank) in enumerate(zip(factors, new_ranks)):
             old_shape = tuple(factor.shape)
@@ -441,7 +453,8 @@ def expand_tucker_model_to_plan_(
         expanded_modules += 1
 
         if before is not None:
-            after = module.materialize_weight(dtype=torch.float32)
+            with _exact_fp32_matmul():
+                after = module.materialize_weight(dtype=torch.float32)
             delta = after - before
             absolute = float(delta.abs().max().cpu())
             relative = float(

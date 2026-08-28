@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import unittest
 
 import torch
 import torch.nn as nn
@@ -33,6 +34,38 @@ class TinyTuckerModel(nn.Module):
             forward_mode="materialize",
             dtype=torch.float64,
         )
+
+
+class ProgressiveTuckerCudaRegression(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for TF32")
+    def test_function_check_disables_tf32_and_restores_backend_state(self):
+        torch.manual_seed(20260828)
+        model = nn.Module().cuda()
+        model.layer = TuckerLinear(
+            1024,
+            2816,
+            rank=(29, 30, 25, 36),
+            bias=False,
+            equal_params=False,
+            forward_mode="materialize",
+            device="cuda",
+            dtype=torch.float32,
+        )
+        previous = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = True
+        try:
+            metrics = expand_tucker_model_to_plan_(
+                model,
+                None,
+                {"layer": (30, 31, 31, 44)},
+                seed=1_001_704,
+                verify_function=True,
+                verify_rtol=5e-5,
+            )
+            self.assertLessEqual(metrics["max_relative_function_error"], 5e-5)
+            self.assertTrue(torch.backends.cuda.matmul.allow_tf32)
+        finally:
+            torch.backends.cuda.matmul.allow_tf32 = previous
 
 
 def _populate_sgd_momentum(model, optimizer):
