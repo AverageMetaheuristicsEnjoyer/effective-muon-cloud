@@ -105,8 +105,6 @@ def define_wandb_metrics(downstream_evaluator=None, lm_evaluator=None):
     wandb.define_metric("final-val/*", step_metric="iter")
     wandb.define_metric("memory/*", step_metric="iter")
     wandb.define_metric("throughput/*", step_metric="iter")
-    wandb.define_metric("stable_rank/*", step_metric="iter")
-    wandb.define_metric("stable_rank_norm/*", step_metric="iter")
     wandb.define_metric("lr", step_metric="iter")
     wandb.define_metric("iter_dt", step_metric="iter")
     wandb.define_metric("tok_gpu_sec", step_metric="iter")
@@ -206,14 +204,6 @@ def main(args):
 
     model = get_model(args).to(args.device)
     print(f"\nModel:\n{model}")
-
-    # ── Tensor-train linears: replace nn.Linear with TTLinear *before* DDP ──
-    if args.use_tt:
-        from models.tt_integration import apply_tt, set_fused, set_modes
-        set_modes(args.tt_modes_d)
-        set_fused(True)
-        apply_tt(model, rank_mid=args.tt_rank)
-        model = model.to(args.device)
 
     # ── Riemannian LoRA: replace Linear modules with RiemannianLoraLinear *before* DDP ──
     if args.opt in ("riemannian_adamw", "riemannian_sgd"):
@@ -358,8 +348,8 @@ def main(args):
             quantile=args.solo_quantile,
             block_size=args.solo_block_sizes[0],
         )
-    elif args.opt in ("muon", "muonlite", "numuon"):
-        from third_party.lite.muonlite import MuonLite, NuMuon
+    elif args.opt in ("muon", "muonlite"):
+        from third_party.lite.muonlite import MuonLite
         raw_model = distributed_backend.get_raw_model(model)
         muon_params = []
         adamw_params = []
@@ -372,42 +362,19 @@ def main(args):
                 else:
                     adamw_params.append((name, t_param))
         if args.opt == "muonlite":
-            optimizer_cls = MuonLite
             lite_kwargs = dict(
                 beta1=args.lite_beta1, beta2=args.lite_beta2,
                 chi=args.lite_chi, chi_adamw=args.lite_chi_adamw,
                 subspace_ratio=args.lite_subspace_ratio,
             )
-        elif args.opt == "numuon":
-            optimizer_cls = NuMuon
-            lite_kwargs = dict(
-                numuon_rank_start=args.numuon_rank_start,
-                numuon_rank_end=args.numuon_rank_end,
-                numuon_rank_scheduler=args.numuon_rank_scheduler,
-                numuon_rank_warmup_fraction=args.numuon_rank_warmup_fraction,
-                numuon_rank_decay_end_fraction=args.numuon_rank_decay_end_fraction,
-                numuon_krylov_iters=args.numuon_krylov_iters,
-                numuon_oversample=args.numuon_oversample,
-                numuon_warm_start=args.numuon_warm_start,
-                numuon_fast=args.numuon_fast,
-                numuon_lmo_log_interval=args.numuon_lmo_log_interval,
-                numuon_lmo_output_path=(
-                    str(exp_dir / "numuon_lmo.jsonl")
-                    if exp_dir is not None and args.numuon_lmo_log_interval > 0
-                    else None
-                ),
-                numuon_lmo_max_per_group=args.numuon_lmo_max_per_group,
-                numuon_lmo_groups=args.numuon_lmo_groups,
-            )
         else:
-            optimizer_cls = MuonLite
             # Vanilla Muon: disable LITE (no subspace, no amplification, no damping)
             lite_kwargs = dict(
                 beta1=0.0, beta2=0.0,
                 chi=1.0, chi_adamw=1.0,
                 subspace_ratio=0.0,
             )
-        opt = optimizer_cls(
+        opt = MuonLite(
             muon_params=muon_params,
             adamw_params=adamw_params,
             lr=args.lr,

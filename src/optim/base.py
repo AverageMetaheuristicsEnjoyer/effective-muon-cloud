@@ -33,11 +33,6 @@ from .utils import (
     save_checkpoint,
     save_worker_state,
 )
-from .stable_rank import (
-    append_stable_rank_jsonl,
-    collect_stable_rank,
-    flatten_stable_rank_metrics,
-)
 
 
 def _sanitize_remote_name(value):
@@ -283,11 +278,9 @@ def train(
         "val_acc": [],
         "downstream": [],
         "aux_lm": [],
-        "stable_rank": [],
     }
     inter_ckpt_steps = set(cfg.inter_ckpts)
     model.train()
-    last_stable_rank_iter = None
 
     # Initialize the progress bar
     if distributed_backend.is_master_process():
@@ -337,31 +330,6 @@ def train(
         _t_opt  = []
 
     while curr_iter <= cfg.iterations:
-        stable_rank_interval = getattr(cfg, "stable_rank_log_interval", 0)
-        if (
-            stable_rank_interval > 0
-            and distributed_backend.is_master_process()
-            and (curr_iter % stable_rank_interval == 0 or curr_iter == cfg.iterations)
-            and curr_iter != last_stable_rank_iter
-        ):
-            raw_for_rank = distributed_backend.get_raw_model(not_compiled_model)
-            stable_rank_groups = collect_stable_rank(raw_for_rank)
-            stable_rank_record = {"iter": curr_iter, "groups": stable_rank_groups}
-            stats["stable_rank"].append(stable_rank_record)
-            last_stable_rank_iter = curr_iter
-            if exp_dir is not None:
-                append_stable_rank_jsonl(exp_dir / "stable_rank.jsonl", stable_rank_record)
-            if stable_rank_groups:
-                all_rank = stable_rank_groups.get("all_projections")
-                if all_rank is not None:
-                    print(
-                        f"StableRank: Iter={curr_iter} "
-                        f"normalized_mean={all_rank['normalized_mean']:.4f} "
-                        f"normalized_std={all_rank['normalized_std']:.4f}"
-                    )
-                if cfg.wandb:
-                    wandb.log(flatten_stable_rank_metrics(stable_rank_record))
-
         # Save permanent checkpoint
         if curr_iter > 0 and cfg.permanent_ckpt_interval > 0 and exp_dir is not None:
             if curr_iter % cfg.permanent_ckpt_interval == 0:

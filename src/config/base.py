@@ -35,6 +35,17 @@ def parse_args(base_parser, args, namespace):
 
     # Checkpointing
     parser.add_argument("--results-base-folder", default="./exps", type=str)
+    parser.add_argument(
+        "--checkpoint-base-folder",
+        default=None,
+        type=str,
+        help=(
+            "Optional base folder for local checkpoint staging/saving. "
+            "When set, checkpoints are written under "
+            "<checkpoint-base-folder>/<wandb_group>/<experiment_name>/ckpts "
+            "instead of --results-base-folder."
+        ),
+    )
     parser.add_argument("--permanent-ckpt-interval", default=0, type=int)
     parser.add_argument(
         "--inter-ckpts",
@@ -75,7 +86,17 @@ def parse_args(base_parser, args, namespace):
             "upload succeeds. Requires --upload-inter-ckpts-to."
         ),
     )
-    parser.add_argument("--resume-from", default=None, type=str)
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        type=str,
+        help=(
+            "Checkpoint directory to resume from. Supports either a local path "
+            "(e.g. '/path/to/ckpt_dir') or an HF URI "
+            "(e.g. 'hf://erinya/efficient_pretrain_checkpoints/intermediate-checkpoints/"
+            "llama-12L8H_fineweb_39k/galore_lr1e-4_wd0.1/inter-ckpt-20000')."
+        ),
+    )
     parser.add_argument(
         "--decay-from-checkpoint",
         action="store_true",
@@ -128,7 +149,7 @@ def parse_args(base_parser, args, namespace):
             "lion", "galore_lion", "coord_lion", "block_lion",  # Lion variants
             "sgd", "galore_sgd", "coord_sgd", "block_sgd",  # SGD variants
             "apollo_adamw", "ldadamw", "fira_adamw", "galore_adafactor", "adamem",  # Apollo/LD/Fira/GaLore/AdaMeM
-            "ademamix", "dion", "adan", "adopt", "soap", "mars", "mars_m", "muon", "numuon", "swan",  # SOTA
+            "ademamix", "dion", "adan", "adopt", "soap", "mars", "mars_m", "muon",  "swan", "shampoo",  # SOTA
             "solo_adamw", "solo_triton_adamw", "muon", "muonlite",
             "lora", "lora_rite",  # LoRA wrapper / LoRA-Rite
             "loro", "loro_adpt",  # LORO low-rank optimiser
@@ -185,41 +206,58 @@ def parse_args(base_parser, args, namespace):
             "c4",
             "fineweb",
             "fineweb-edu",
+            "fineweb-bin",
         ],
     )
-    parser.add_argument("--tokenizer", default="gpt2", choices=["gpt2", "mistral", "qwen3"])
+    parser.add_argument("--tokenizer", default="gpt2", choices=["gpt2", "mistral"])
     parser.add_argument("--vocab-size", default=50304, type=int)
     parser.add_argument("--data-in-ram", action="store_true")
     parser.add_argument("--local_data", action="store_true", help="For local debug with C4 samples")
     parser.add_argument("--local_data_path", type=str, default=None, help="Local path to data folder for local debug with C4")
+    parser.add_argument(
+        "--fineweb-source",
+        default="auto",
+        choices=["auto", "local", "hf"],
+        help=(
+            "FineWeb source: local parquet shards, exact Hugging Face parquet "
+            "streaming, or auto local-then-HF fallback."
+        ),
+    )
+    parser.add_argument(
+        "--fineweb-hf-repo-id",
+        default="HuggingFaceFW/fineweb-edu",
+        help="Hugging Face dataset repo for exact FineWeb parquet streaming.",
+    )
+    parser.add_argument(
+        "--fineweb-hf-data-prefix",
+        default="sample/100BT",
+        help="Path prefix inside the Hugging Face FineWeb dataset repo.",
+    )
+    parser.add_argument(
+        "--fineweb-hf-revision",
+        default="main",
+        help=(
+            "Requested Hugging Face revision for FineWeb. It is resolved to a "
+            "commit SHA and stored in checkpoints for exact resume."
+        ),
+    )
 
     # Model
     parser.add_argument(
         "--model",
         default="llama",
-        choices=["base", "llama", "qwen3"],
+        choices=["base", "llama"],
     )
     parser.add_argument("--parallel-block", action="store_true")
     parser.add_argument("--use-pretrained", default="none", type=str)
     parser.add_argument("--init-std", default=0.02, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)
     parser.add_argument("--n-head", default=12, type=int)
-    parser.add_argument("--n-kv-head", default=0, type=int,
-        help="Number of key/value heads for grouped-query attention. 0 means --n-head.")
-    parser.add_argument("--head-dim", default=0, type=int,
-        help="Attention head dimension. 0 means --n-embd / --n-head.")
     parser.add_argument("--n-layer", default=24, type=int)
     parser.add_argument("--sequence-length", default=1024, type=int)
     parser.add_argument("--n-embd", default=768, type=int)
     parser.add_argument("--multiple-of", default=256, type=int)
-    parser.add_argument("--intermediate-size", default=0, type=int,
-        help="Explicit gated-MLP hidden size. 0 uses the Llama multiple-of rule.")
     parser.add_argument("--rmsnorm-eps", default=1e-5, type=float)
-    parser.add_argument("--rope-theta", default=10000.0, type=float)
-    parser.add_argument("--qk-norm", action="store_true",
-        help="Apply per-head RMSNorm to query and key projections, as in Qwen3.")
-    parser.add_argument("--tie-word-embeddings", action="store_true",
-        help="Tie token embedding and output projection weights.")
     parser.add_argument(
         "--dtype",
         default="bfloat16",
@@ -336,6 +374,11 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--proj_norms", default=False, action='store_true')
     parser.add_argument("--proj_embeds", default=False, action='store_true')
     parser.add_argument("--proj_logits", default=False, action='store_true')
+
+    # Shampoo parameters
+    parser.add_argument("--shampoo_preconditioner_frequency", type=int, default=100)
+    parser.add_argument("--shampoo_max_preconditioner_dim", type=int, default=1024)
+    parser.add_argument("--shampoo_beta3", type=float, default=-1.0)
 
     # Galore parameters
     parser.add_argument("--proj_side", type=str, default="std", choices=["std", "reverse_std", "right", "left", "full"])
@@ -592,50 +635,5 @@ def parse_args(base_parser, args, namespace):
         help="Newton-Schulz iterations (default: 6).")
     parser.add_argument("--lite-muon-theta", type=float, default=0.95,
         help="Muon momentum decay (default: 0.95).")
-
-    # -- NuMuon optimizer ---------------------------------------------------
-    parser.add_argument("--numuon-rank-start", type=float, default=1.0,
-        help="NuMuon initial rank fraction relative to min(matrix shape).")
-    parser.add_argument("--numuon-rank-end", type=float, default=0.25,
-        help="NuMuon final rank fraction relative to min(matrix shape).")
-    parser.add_argument("--numuon-rank-scheduler", type=str, default="cosine",
-        choices=["cosine", "fixed"],
-        help="NuMuon rank scheduler. Cosine holds rank-start, then decays to rank-end.")
-    parser.add_argument("--numuon-rank-warmup-fraction", type=float, default=0.1,
-        help="Fraction of total optimizer steps to keep rank-start before cosine rank decay.")
-    parser.add_argument("--numuon-rank-decay-end-fraction", type=float, default=1.0,
-        help="Fraction of total optimizer steps by which cosine rank decay reaches rank-end.")
-    parser.add_argument("--numuon-krylov-iters", type=int, default=2,
-        help="Block Krylov iterations for NuMuon top-k SVD approximation.")
-    parser.add_argument("--numuon-oversample", type=int, default=8,
-        help="Additional Block Krylov block size beyond the target rank.")
-    parser.add_argument("--numuon-no-warm-start", dest="numuon_warm_start", action="store_false",
-        help="Disable warm-starting NuMuon Block Krylov with the previous right singular basis.")
-    parser.set_defaults(numuon_warm_start=True)
-    parser.add_argument("--numuon-no-fast", dest="numuon_fast", action="store_false",
-        help="Disable the batched gesvda/CholeskyQR2 fast path and use the reference "
-             "per-matrix Block Krylov implementation.")
-    parser.set_defaults(numuon_fast=True)
-
-    # -- Tensor-train (TT) linear layers -------------------------------------
-    parser.add_argument("--use-tt", action="store_true",
-        help="Replace attention/MLP linears with tensor-train layers "
-             "(fused materialized-W forward; see src/models/tt_integration.py).")
-    parser.add_argument("--tt-rank", type=int, default=64,
-        help="Interior TT bond rank.")
-    parser.add_argument("--tt-modes-d", type=int, default=3,
-        choices=[3, 4, 5, 6, 7, 8, 9, 10],
-        help="Number of TT factors per dimension.")
-
-    parser.add_argument("--numuon-lmo-log-interval", type=int, default=0,
-        help="Log exact-SVD NuMuon LMO quality every N optimizer steps. 0 disables logging.")
-    parser.add_argument("--numuon-lmo-max-per-group", type=int, default=1,
-        help="Maximum parameters per selected group to diagnose at each LMO logging step.")
-    parser.add_argument("--numuon-lmo-groups", nargs="+", default=["ffn_gate", "ffn_down", "ffn_up"],
-        help="Parameter groups to include in NuMuon LMO diagnostics.")
-
-    # -- Stable-rank monitoring --------------------------------------------
-    parser.add_argument("--stable-rank-log-interval", type=int, default=0,
-        help="Log normalized stable rank every N optimizer steps. 0 disables logging.")
 
     return parser.parse_args(args, namespace)

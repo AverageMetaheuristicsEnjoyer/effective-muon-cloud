@@ -18,10 +18,6 @@ def get_tokenizer(args, verbose=True):
         tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-    elif tokenizer_name == "qwen3":
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
     else:
         # Default tokenizer
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -91,6 +87,15 @@ def get_dataset(args) -> Union[Dict[str, np.ndarray], Dict[str, Any]]:
         from .c4 import get_c4_data
 
         return get_c4_data(args.datasets_dir, args, 128)
+    if args.dataset == "fineweb-bin":
+        bin_dir = Path(args.datasets_dir) / "fineweb_edu_100BT_bin"
+        train_bin, val_bin = bin_dir / "train.bin", bin_dir / "val.bin"
+        if not train_bin.exists() or not val_bin.exists():
+            raise FileNotFoundError(
+                f"fineweb-bin expects pre-tokenized bins at {bin_dir} "
+                "(build with scripts/data/prepare_fineweb_bin.py)."
+            )
+        return {"train": str(train_bin), "val": str(val_bin)}
     else:
         raise NotImplementedError(f"Unknown dataset key '{args.dataset}'")
 
