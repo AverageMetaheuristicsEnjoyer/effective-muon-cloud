@@ -206,6 +206,58 @@ if [[ "${MODE}" == "diagnose-169-growth" ]]; then
     exit "${PIPESTATUS[0]}"
 fi
 
+if [[ "${MODE}" == "inspect-225-checkpoint" || "${MODE}" == "inspect-169-checkpoint" ]]; then
+    ARM="${MODE#inspect-}"
+    ARM="${ARM%-checkpoint}"
+    python - "${ROOT}" "${ARM}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+import torch
+
+root = Path(sys.argv[1])
+arm = sys.argv[2]
+experiments = {
+    "225": "llama257m_tucker_late_225m_to_257m_customfb_bs16acc8_run2",
+    "169": "llama257m_tucker_late_169m_to_257m_customfb_bs16acc8_run1",
+}
+latest = root / "exps" / "1xChinchilla-tucker-retract" / experiments[arm] / "ckpts" / "latest"
+main_path = latest / "main.pt"
+worker_path = latest / "worker_0.pt"
+before = {
+    path.name: (path.stat().st_size, path.stat().st_mtime_ns)
+    for path in (main_path, worker_path)
+}
+main = torch.load(main_path, map_location="cpu", weights_only=False)
+worker = torch.load(worker_path, map_location="cpu", weights_only=False)
+after = {
+    path.name: (path.stat().st_size, path.stat().st_mtime_ns)
+    for path in (main_path, worker_path)
+}
+if after != before:
+    raise RuntimeError("Checkpoint changed during inspection")
+if "train_reader_state" not in worker:
+    raise RuntimeError("Checkpoint has no FineWeb reader state")
+print(
+    json.dumps(
+        {
+            "arm": arm,
+            "iteration": int(main["itr"]),
+            "main_bytes": before["main.pt"][0],
+            "worker_bytes": before["worker_0.pt"][0],
+            "optimizer_state_entries": len(main["optimizer"]["state"]),
+            "progressive_stage": int(main["progressive_tucker"]["stage_index"]),
+            "reader_state": True,
+            "stable_during_load": True,
+        },
+        sort_keys=True,
+    )
+)
+PY
+    exit 0
+fi
+
 case "${MODE}" in
     225) LAUNCHER=scripts/launch_tucker225_to_257_late_custom_backward.sh ;;
     169) LAUNCHER=scripts/launch_tucker169_to_257_late_custom_backward.sh ;;
@@ -215,7 +267,7 @@ case "${MODE}" in
         export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
-    *) echo "Expected mode: preflight, resume-preflight, archive-225, archive-169, repair-python, peek, disk, correctness, diagnose-169-growth, smoke225, 225, or 169" >&2; exit 2 ;;
+    *) echo "Expected mode: preflight, resume-preflight, archive-225, archive-169, repair-python, peek, disk, correctness, diagnose-169-growth, inspect-225-checkpoint, inspect-169-checkpoint, smoke225, 225, or 169" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"
