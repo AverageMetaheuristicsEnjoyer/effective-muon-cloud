@@ -248,9 +248,14 @@ run_repair() {
         *-1c) start=35325; target=39250; budget=1xC ;;
         *-2c) start=70650; target=78500; budget=2xC ;;
     esac
-    expected_world=8
-    batch_size=16
-    acc_steps=8
+    expected_world=4
+    if [[ $optimizer == shampoo ]]; then
+        batch_size=16
+        acc_steps=8
+    else
+        batch_size=32
+        acc_steps=4
+    fi
     local warmup_steps=2000
     local decay_fraction=0.1
     local resume_args=()
