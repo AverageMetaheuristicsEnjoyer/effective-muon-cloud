@@ -312,7 +312,7 @@ run_repair() {
         --wandb-tags bf16 schedule-repair 250m "$budget" "$optimizer" cloudru
     )
     if [[ $smoke == 1 ]]; then
-        eval_args=(--eval-interval 1 --eval-batches 1 --log-interval 1)
+        eval_args=(--eval-interval 500 --eval-batches 32 --log-interval 1)
         output_args=(--no-local-save)
     fi
 
