@@ -290,19 +290,13 @@ def custom_tucker_linear(x, module, chunk_size: int, *, cache_policy: str):
         if recast
         else _cached_work_tensors(module, work_dtype)
     )
-    parameters = tuple(
-        parameter.view_as(parameter)
-        for parameter in (
-            module.core_matrix,
-            module.U1,
-            module.U2,
-            module.U3,
-            module.U4,
-        )
-    )
     return NoOutputRecomputeTuckerLinearFunction.apply(
         x.to(dtype=work_dtype),
-        *parameters,
+        module.core_matrix,
+        module.U1,
+        module.U2,
+        module.U3,
+        module.U4,
         *work,
         chunk_size,
         recast,

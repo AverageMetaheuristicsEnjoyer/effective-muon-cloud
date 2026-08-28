@@ -75,7 +75,7 @@ def _populate_sgd_momentum(model, optimizer):
     optimizer.zero_grad(set_to_none=True)
 
 
-def test_rank_expansion_preserves_function_and_optimizer_identity():
+def test_rank_expansion_preserves_function_and_optimizer_state():
     torch.manual_seed(7)
     model = TinyTuckerModel()
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
@@ -110,7 +110,12 @@ def test_rank_expansion_preserves_function_and_optimizer_identity():
         rtol=1e-14,
     )
     for name, parameter in model.named_parameters():
-        assert parameter is parameters_before[name]
+        assert parameter is not parameters_before[name]
+        assert any(
+            parameter is grouped
+            for group in optimizer.param_groups
+            for grouped in group["params"]
+        )
 
     new_core_momentum = optimizer.state[model.layer.core_matrix][
         "momentum_buffer"
@@ -206,6 +211,7 @@ def test_tensorion_can_step_and_retract_after_growth():
         verify_rtol=1e-6,
     )
     assert optimizer._plans[layer.core_matrix].tensor_shape == (4, 4, 4, 4)
+    factors = (layer.U1, layer.U2, layer.U3, layer.U4)
     for factor in factors:
         assert optimizer.state[factor]["momentum_buffer"].shape == factor.shape
 

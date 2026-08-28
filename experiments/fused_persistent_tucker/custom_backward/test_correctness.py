@@ -21,6 +21,7 @@ from models.tucker_chunked import chunked_tucker_linear as reference_linear  # n
 import models.tucker_linear as tucker_linear_module  # noqa: E402
 from models.tucker_linear import TuckerLinear  # noqa: E402
 from optim.progressive_tucker import expand_tucker_model_to_plan_  # noqa: E402
+from optim.tensorion import TensorionOptimizer  # noqa: E402
 from experiments.fused_persistent_tucker.custom_backward.ops import (  # noqa: E402
     custom_tucker_linear,
 )
@@ -226,10 +227,51 @@ def main():
             value, module, chunk, cache_policy="recast"
         ),
     )
-    progressive.layer.zero_grad(set_to_none=True)
+    progressive_ranks = tuple(progressive.layer.ranks)
+    progressive_factors = (
+        progressive.layer.U1,
+        progressive.layer.U2,
+        progressive.layer.U3,
+        progressive.layer.U4,
+    )
+    progressive_optimizer = TensorionOptimizer(
+        tensorion_params=[
+            (
+                "layer.core_matrix",
+                progressive.layer.core_matrix,
+                (
+                    progressive_ranks[2],
+                    progressive_ranks[3],
+                    progressive_ranks[0],
+                    progressive_ranks[1],
+                ),
+            )
+        ],
+        adamw_param_groups=[],
+        riemannian_muon_params=[
+            (f"layer.U{index}", factor)
+            for index, factor in enumerate(progressive_factors, start=1)
+        ],
+        tucker_module_specs=[
+            (
+                "layer",
+                progressive.layer.core_matrix,
+                progressive_factors,
+            )
+        ],
+        tucker_lr_scaling_mode="none",
+        tucker_riemannian_muon_post_ns_project=False,
+        lr=1e-3,
+        momentum=0.95,
+        adjust_lr=True,
+        ns_steps=2,
+    )
+    progressive_optimizer.step()
+    progressive.layer.retract_with_optimizer_state_(progressive_optimizer)
+    progressive_optimizer.zero_grad(set_to_none=True)
     expand_tucker_model_to_plan_(
         progressive,
-        None,
+        progressive_optimizer,
         {"layer": (30, 31, 31, 44)},
         seed=1_001_704,
         verify_function=True,
