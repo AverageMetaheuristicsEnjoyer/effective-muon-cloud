@@ -17,6 +17,7 @@ export HF_HOME=${HF_HOME:-$persist/cache/huggingface}
 export TORCH_HOME=${TORCH_HOME:-$persist/cache/torch}
 export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-$persist/cache/triton}
 export PIP_CACHE_DIR=${PIP_CACHE_DIR:-$persist/cache/pip}
+export HF_REPO_ID=${HF_REPO_ID:-AverageMetaheuristicsEnjoyer/efficient_pretrain_checkpoints}
 export PYTHONPATH=$root/src${PYTHONPATH:+:$PYTHONPATH}
 
 report_disks() {
@@ -140,7 +141,7 @@ root = Path(os.environ["ET_SOURCE_ROOT"])
 remote = os.environ["ET_REMOTE_PATH"]
 world = int(os.environ["ET_EXPECTED_WORLD"])
 snapshot_download(
-    repo_id="moderntalker/efficient_pretrain_checkpoints",
+    repo_id=os.environ["HF_REPO_ID"],
     repo_type="model",
     allow_patterns=[f"{remote}/**"],
     local_dir=root,
@@ -169,7 +170,7 @@ from huggingface_hub import HfApi
 
 local = Path(os.environ["ET_CHECKPOINT_DIR"])
 remote = os.environ["ET_UPLOAD_PATH"]
-repo = "moderntalker/efficient_pretrain_checkpoints"
+repo = os.environ["HF_REPO_ID"]
 local_files = {
     str(path.relative_to(local)): path.stat().st_size
     for path in sorted(local.rglob("*"))
@@ -294,7 +295,7 @@ run_repair() {
     local experiment=bf16_250m_${arm//-/_}_wsd_repair_${run_key}
     [[ $smoke == 1 ]] && experiment=smoke_${experiment}
     local group=bf16_250m_schedule_repairs
-    local results_root=$persist/results
+    local results_root=${CHECKPOINT_PERSIST_ROOT:-/home/jovyan/bf16-schedule-repair-checkpoints}/results
     local checkpoint_dir=$results_root/$group/$experiment/ckpts/latest
     local app_state=$state_dir/$experiment
     rm -f "$app_state".done.* "$app_state".failed "$app_state".uploaded
