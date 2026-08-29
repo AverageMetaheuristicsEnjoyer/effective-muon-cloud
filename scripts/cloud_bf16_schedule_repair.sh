@@ -257,6 +257,7 @@ run_repair() {
         acc_steps=4
     fi
     local warmup_steps=2000
+    [[ $arm == shampoo-1c ]] && warmup_steps=3925
     local decay_fraction=0.1
     local resume_args=()
     local smoke=0
