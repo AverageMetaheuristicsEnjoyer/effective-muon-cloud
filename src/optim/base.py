@@ -368,14 +368,18 @@ def train(
                 ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
                 if distributed_backend.is_master_process():
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                distributed_backend.barrier()
                 save_worker_state(ckpt_dir, train_reader=train_reader)
+                distributed_backend.barrier()
 
         # Save explicit intermediate checkpoints
         if curr_iter > 0 and curr_iter in inter_ckpt_steps and exp_dir is not None:
             ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
             if distributed_backend.is_master_process():
                 save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+            distributed_backend.barrier()
             save_worker_state(ckpt_dir, train_reader=train_reader)
+            distributed_backend.barrier()
 
             if cfg.upload_inter_ckpts_to:
                 distributed_backend.barrier()
@@ -389,7 +393,9 @@ def train(
                 ckpt_dir = exp_dir / "ckpts" / "latest"
                 if distributed_backend.is_master_process():
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                distributed_backend.barrier()
                 save_worker_state(ckpt_dir, train_reader=train_reader)
+                distributed_backend.barrier()
 
         ws = distributed_backend.get_world_size()
         if (

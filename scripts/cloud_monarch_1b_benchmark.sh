@@ -26,7 +26,7 @@ python src/main.py \
   --dataset shakespeare-char \
   --datasets-dir "/tmp/monarch-1b-benchmark-${RANK}" \
   --model llama \
-  --n-layer 20 \
+  --n-layer 16 \
   --n-embd 2048 \
   --n-head 16 \
   --intermediate-size 5632 \
