@@ -207,6 +207,12 @@ def main(args):
     model = get_model(args).to(args.device)
     print(f"\nModel:\n{model}")
 
+    if args.opt == "monarch_muon" or args.apply_monarch:
+        from models.monarch import apply_monarch, patch_monarch_linear
+
+        apply_monarch(model, nblocks=args.monarch_nblocks)
+        patch_monarch_linear(blocked=True, fast_riffle=True)
+
     # ── Tensor-train linears: replace nn.Linear with TTLinear *before* DDP ──
     if args.use_tt:
         from models.tt_integration import apply_tt, set_fused, set_modes
@@ -256,7 +262,14 @@ def main(args):
     )
 
     # ── Parameter groups ───────────────────────────────────────────────
-    if args.opt in ("riemannian_adamw", "riemannian_sgd"):
+    if args.opt == "monarch_muon":
+        group_specs = None
+        optimized_params_cnt = sum(
+            p.numel()
+            for p in distributed_backend.get_raw_model(model).parameters()
+            if p.requires_grad
+        )
+    elif args.opt in ("riemannian_adamw", "riemannian_sgd"):
         # Param groups are built inside the optimizer instantiation block below.
         group_specs = None
         optimized_params_cnt = sum(p.numel() for p in distributed_backend.get_raw_model(model).parameters() if p.requires_grad)
@@ -421,6 +434,30 @@ def main(args):
             total_steps=args.iterations,
             warmup_steps=args.warmup_steps,
             **lite_kwargs,
+        )
+    elif args.opt == "monarch_muon":
+        from models.monarch import MonarchMuonOptimizer
+
+        raw_model = distributed_backend.get_raw_model(model)
+        muon_params = []
+        adamw_params = []
+        for name, parameter in raw_model.named_parameters():
+            if parameter.ndim >= 2 and not any(
+                excluded in name for excluded in ("wte", "wpe", "lm_head", "embed")
+            ):
+                muon_params.append(parameter)
+            else:
+                adamw_params.append(parameter)
+        opt = MonarchMuonOptimizer(
+            muon_params=muon_params,
+            adamw_params=adamw_params,
+            lr=args.lr,
+            momentum=args.momentum,
+            adamw_betas=(args.beta1, args.beta2),
+            adamw_weight_decay=args.weight_decay,
+            adamw_eps=args.eps,
+            ns_dtype=torch.bfloat16,
+            use_foreach=True,
         )
     elif args.opt in ("loro", "loro_adpt"):
         from optim.memory_efficient.loro import LOROAdamW

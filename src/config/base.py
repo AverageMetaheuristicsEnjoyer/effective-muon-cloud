@@ -140,6 +140,7 @@ def parse_args(base_parser, args, namespace):
             "slim_adam",  # SlimAdam: memory-efficient Adam with compressed second moments
             "riemannian_adamw",  # Riemannian Adam on Stiefel manifold (LoRA factors)
             "riemannian_sgd",   # Riemannian SGD on Stiefel manifold (LoRA factors)
+            "monarch_muon",
         ],
     )
     parser.add_argument("--batch-size", default=32, type=int)
@@ -200,6 +201,8 @@ def parse_args(base_parser, args, namespace):
         choices=["base", "llama", "qwen3"],
     )
     parser.add_argument("--parallel-block", action="store_true")
+    parser.add_argument("--monarch-nblocks", type=int, choices=[2, 4], default=2)
+    parser.add_argument("--apply-monarch", action="store_true")
     parser.add_argument("--use-pretrained", default="none", type=str)
     parser.add_argument("--init-std", default=0.02, type=float)
     parser.add_argument("--dropout", default=0.0, type=float)

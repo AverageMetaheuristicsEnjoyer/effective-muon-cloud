@@ -304,7 +304,9 @@ class GPTBase(nn.Module):
         for mn, m in self.named_modules():
             for pn, p in m.named_parameters():
                 fpn = "%s.%s" % (mn, pn) if mn else pn
-                if pn.endswith("bias"):
+                if pn in ("blkdiag1", "blkdiag2"):
+                    decay.add(fpn)
+                elif pn.endswith("bias"):
                     no_decay.add(fpn)
                 elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
                     decay.add(fpn)
