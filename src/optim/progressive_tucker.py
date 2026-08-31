@@ -1,9 +1,8 @@
 """Function-preserving progressive rank growth for Tucker language models.
 
 The controller in this module grows the ranks of existing ``TuckerLinear``
-parameters in-place.  Keeping the ``nn.Parameter`` objects themselves alive is
-important: schedulers, Tensorion parameter groups, and checkpoint parameter
-ordering remain unchanged.  Progressive mode is intentionally restricted to a
+parameters while preserving their positions in optimizer parameter groups and
+checkpoint ordering.  Progressive mode is intentionally restricted to a
 single, uncompiled process because DDP reducers and compiled graphs cache
 parameter shapes.
 
@@ -15,11 +14,22 @@ unchanged at the instant of growth.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import math
 from typing import Iterable, Mapping, Sequence
 
 import torch
+
+
+@contextmanager
+def _exact_fp32_matmul():
+    previous = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous
 
 
 RankTuple = tuple[int, int, int, int]
@@ -293,6 +303,66 @@ def _resize_core_optimizer_state(
             state[key] = _expanded_core(value, old_ranks, new_ranks)
 
 
+def _replace_parameter_(
+    module: torch.nn.Module,
+    attribute: str,
+    value: torch.Tensor,
+    optimizer,
+) -> torch.nn.Parameter:
+    old = getattr(module, attribute)
+    new = torch.nn.Parameter(value, requires_grad=old.requires_grad)
+    setattr(module, attribute, new)
+    if optimizer is None:
+        return new
+
+    replaced = False
+    for group in optimizer.param_groups:
+        for index, parameter in enumerate(group["params"]):
+            if parameter is old:
+                group["params"][index] = new
+                replaced = True
+    if not replaced:
+        raise RuntimeError("Expanded Tucker parameter is absent from optimizer groups")
+
+    marker = object()
+    state = optimizer.state.pop(old, marker)
+    if state is not marker:
+        optimizer.state[new] = state
+
+    for name in (
+        "_plans",
+        "_names",
+        "_muon_plans",
+        "_muon_names",
+        "_parameter_groups_by_parameter",
+    ):
+        mapping = getattr(optimizer, name, None)
+        if mapping is not None and old in mapping:
+            mapping[new] = mapping.pop(old)
+    for name in (
+        "_stiefel_actual_norm_parameters",
+        "_warned_stiefel_parameters",
+        "_riemannian_muon_parameters",
+        "_coupled_parameters",
+    ):
+        collection = getattr(optimizer, name, None)
+        if collection is not None and old in collection:
+            collection.remove(old)
+            collection.add(new)
+    if hasattr(optimizer, "_tucker_specs"):
+        optimizer._tucker_specs = tuple(
+            replace(
+                spec,
+                core=new if spec.core is old else spec.core,
+                factors=tuple(
+                    new if factor is old else factor for factor in spec.factors
+                ),
+            )
+            for spec in optimizer._tucker_specs
+        )
+    return new
+
+
 def _refresh_optimizer_structure(optimizer, module: torch.nn.Module) -> None:
     """Refresh Tensorion/Muon unfolding metadata after an in-place resize."""
 
@@ -372,7 +442,7 @@ def expand_tucker_model_to_plan_(
     verify_function: bool = True,
     verify_rtol: float = 5e-5,
 ) -> dict[str, float | int]:
-    """Expand every requested Tucker module without replacing Parameters."""
+    """Expand every requested Tucker module and migrate optimizer references."""
 
     modules = _tucker_modules(model)
     if set(ranks) != set(modules):
@@ -405,15 +475,19 @@ def expand_tucker_model_to_plan_(
         ):
             raise RuntimeError("Tucker ranks may only grow between optimizer steps")
 
-        before = (
-            module.materialize_weight(dtype=torch.float32)
-            if verify_function
-            else None
-        )
-        factors = (module.U1, module.U2, module.U3, module.U4)
-        for mode_index, (factor, target_rank) in enumerate(zip(factors, new_ranks)):
+        with _exact_fp32_matmul():
+            before = (
+                module.materialize_weight(dtype=torch.float32)
+                if verify_function
+                else None
+            )
+        factor_names = ("U1", "U2", "U3", "U4")
+        for mode_index, (factor_name, target_rank) in enumerate(
+            zip(factor_names, new_ranks)
+        ):
+            factor = getattr(module, factor_name)
             old_shape = tuple(factor.shape)
-            factor.data = _orthogonal_complement(
+            expanded_factor = _orthogonal_complement(
                 factor,
                 target_rank,
                 seed=seed + 1009 * module_index + 97 * mode_index,
@@ -422,26 +496,40 @@ def expand_tucker_model_to_plan_(
                 optimizer,
                 factor,
                 old_shape,
-                tuple(factor.shape),
+                tuple(expanded_factor.shape),
+            )
+            _replace_parameter_(
+                module,
+                factor_name,
+                expanded_factor,
+                optimizer,
             )
 
-        module.core_matrix.data = _expanded_core(
+        old_core = module.core_matrix
+        expanded_core = _expanded_core(
             module.core_matrix,
             old_ranks,
             new_ranks,
         )
         _resize_core_optimizer_state(
             optimizer,
-            module.core_matrix,
+            old_core,
             old_ranks,
             new_ranks,
+        )
+        _replace_parameter_(
+            module,
+            "core_matrix",
+            expanded_core,
+            optimizer,
         )
         _update_module_metadata(module, new_ranks)
         _refresh_optimizer_structure(optimizer, module)
         expanded_modules += 1
 
         if before is not None:
-            after = module.materialize_weight(dtype=torch.float32)
+            with _exact_fp32_matmul():
+                after = module.materialize_weight(dtype=torch.float32)
             delta = after - before
             absolute = float(delta.abs().max().cpu())
             relative = float(

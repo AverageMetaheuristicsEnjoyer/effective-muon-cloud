@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import unittest
 
 import torch
 import torch.nn as nn
@@ -35,6 +36,38 @@ class TinyTuckerModel(nn.Module):
         )
 
 
+class ProgressiveTuckerCudaRegression(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for TF32")
+    def test_function_check_disables_tf32_and_restores_backend_state(self):
+        torch.manual_seed(20260828)
+        model = nn.Module().cuda()
+        model.layer = TuckerLinear(
+            1024,
+            2816,
+            rank=(29, 30, 25, 36),
+            bias=False,
+            equal_params=False,
+            forward_mode="materialize",
+            device="cuda",
+            dtype=torch.float32,
+        )
+        previous = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = True
+        try:
+            metrics = expand_tucker_model_to_plan_(
+                model,
+                None,
+                {"layer": (30, 31, 31, 44)},
+                seed=1_001_704,
+                verify_function=True,
+                verify_rtol=5e-5,
+            )
+            self.assertLessEqual(metrics["max_relative_function_error"], 5e-5)
+            self.assertTrue(torch.backends.cuda.matmul.allow_tf32)
+        finally:
+            torch.backends.cuda.matmul.allow_tf32 = previous
+
+
 def _populate_sgd_momentum(model, optimizer):
     inputs = torch.randn(5, 16, dtype=torch.float64)
     model.layer(inputs).square().mean().backward()
@@ -42,7 +75,7 @@ def _populate_sgd_momentum(model, optimizer):
     optimizer.zero_grad(set_to_none=True)
 
 
-def test_rank_expansion_preserves_function_and_optimizer_identity():
+def test_rank_expansion_preserves_function_and_optimizer_state():
     torch.manual_seed(7)
     model = TinyTuckerModel()
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
@@ -77,7 +110,12 @@ def test_rank_expansion_preserves_function_and_optimizer_identity():
         rtol=1e-14,
     )
     for name, parameter in model.named_parameters():
-        assert parameter is parameters_before[name]
+        assert parameter is not parameters_before[name]
+        assert any(
+            parameter is grouped
+            for group in optimizer.param_groups
+            for grouped in group["params"]
+        )
 
     new_core_momentum = optimizer.state[model.layer.core_matrix][
         "momentum_buffer"
@@ -173,6 +211,7 @@ def test_tensorion_can_step_and_retract_after_growth():
         verify_rtol=1e-6,
     )
     assert optimizer._plans[layer.core_matrix].tensor_shape == (4, 4, 4, 4)
+    factors = (layer.U1, layer.U2, layer.U3, layer.U4)
     for factor in factors:
         assert optimizer.state[factor]["momentum_buffer"].shape == factor.shape
 

@@ -20,6 +20,8 @@ sys.path.insert(0, str(HERE.parent))
 from models.tucker_chunked import chunked_tucker_linear as reference_linear  # noqa: E402
 import models.tucker_linear as tucker_linear_module  # noqa: E402
 from models.tucker_linear import TuckerLinear  # noqa: E402
+from optim.progressive_tucker import expand_tucker_model_to_plan_  # noqa: E402
+from optim.tensorion import TensorionOptimizer  # noqa: E402
 from experiments.fused_persistent_tucker.custom_backward.ops import (  # noqa: E402
     custom_tucker_linear,
 )
@@ -77,6 +79,21 @@ def main():
         _assert_close(f"{policy}.loss", loss, ref_loss, 1e-6, 1e-6)
         for name, expected in ref_grads.items():
             _assert_close(f"{policy}.{name}", grads[name], expected, 3e-2, 3e-2)
+
+    # Real Llama embeddings stay FP32 under autocast. The custom path must cast
+    # both activations and Tucker work tensors to the active autocast dtype.
+    fp32_module = copy.deepcopy(base)
+    fp32_x = torch.randn(
+        64, 1024, device="cuda", dtype=torch.float32
+    ).requires_grad_(True)
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        fp32_y = custom_tucker_linear(
+            fp32_x, fp32_module, 16384, cache_policy="recast"
+        )
+        fp32_loss = fp32_y.float().square().mean()
+    fp32_loss.backward()
+    if fp32_y.dtype != torch.bfloat16 or not torch.isfinite(fp32_x.grad).all():
+        raise AssertionError("FP32-input autocast path produced an invalid result")
 
     # Both asymmetric production shapes must use the same exact VJP.
     for in_features, out_features in ((1024, 2816), (2816, 1024)):
@@ -221,9 +238,90 @@ def main():
     if old_key == new_key:
         raise AssertionError("BF16 cache key did not change after optimizer.step()")
 
+    progressive = torch.nn.Module().cuda()
+    progressive.layer = TuckerLinear(
+        1024,
+        2816,
+        rank=(29, 30, 25, 36),
+        bias=False,
+        equal_params=False,
+        forward_mode="chunked_contract",
+        contract_chunk_size=16384,
+        device="cuda",
+    ).train()
+    progressive_x = torch.randn(64, 1024, device="cuda", dtype=torch.bfloat16)
+    _run(
+        progressive.layer,
+        progressive_x,
+        lambda value, module, chunk: custom_tucker_linear(
+            value, module, chunk, cache_policy="recast"
+        ),
+    )
+    progressive_ranks = tuple(progressive.layer.ranks)
+    progressive_factors = (
+        progressive.layer.U1,
+        progressive.layer.U2,
+        progressive.layer.U3,
+        progressive.layer.U4,
+    )
+    progressive_optimizer = TensorionOptimizer(
+        tensorion_params=[
+            (
+                "layer.core_matrix",
+                progressive.layer.core_matrix,
+                (
+                    progressive_ranks[2],
+                    progressive_ranks[3],
+                    progressive_ranks[0],
+                    progressive_ranks[1],
+                ),
+            )
+        ],
+        adamw_param_groups=[],
+        riemannian_muon_params=[
+            (f"layer.U{index}", factor)
+            for index, factor in enumerate(progressive_factors, start=1)
+        ],
+        tucker_module_specs=[
+            (
+                "layer",
+                progressive.layer.core_matrix,
+                progressive_factors,
+            )
+        ],
+        tucker_lr_scaling_mode="none",
+        tucker_riemannian_muon_post_ns_project=False,
+        lr=1e-3,
+        momentum=0.95,
+        adjust_lr=True,
+        ns_steps=2,
+    )
+    progressive_optimizer.step()
+    progressive.layer.retract_with_optimizer_state_(progressive_optimizer)
+    progressive_optimizer.zero_grad(set_to_none=True)
+    expand_tucker_model_to_plan_(
+        progressive,
+        progressive_optimizer,
+        {"layer": (30, 31, 31, 44)},
+        seed=1_001_704,
+        verify_function=True,
+        verify_rtol=5e-5,
+    )
+    _, _, progressive_grads = _run(
+        progressive.layer,
+        progressive_x,
+        lambda value, module, chunk: custom_tucker_linear(
+            value, module, chunk, cache_policy="recast"
+        ),
+    )
+    for name, parameter in progressive.layer.named_parameters():
+        gradient = progressive_grads[name]
+        if gradient.shape != parameter.shape or not torch.isfinite(gradient).all():
+            raise AssertionError(f"invalid post-growth gradient for {name}")
+
     print(
         "PASS all production shapes, non-contiguous multi-chunk, accumulation, "
-        "finite grads, cache invalidation"
+        "finite grads, cache invalidation, progressive growth"
     )
 
 

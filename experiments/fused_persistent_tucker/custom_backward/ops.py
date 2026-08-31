@@ -280,13 +280,18 @@ def custom_tucker_linear(x, module, chunk_size: int, *, cache_policy: str):
     recast = cache_policy == "recast" or (
         cache_policy == "hybrid_gate_up" and module.out_features != 2816
     )
+    work_dtype = (
+        torch.get_autocast_dtype(x.device.type)
+        if torch.is_autocast_enabled(x.device.type)
+        else x.dtype
+    )
     work = (
-        _fresh_work_tensors(module, x.dtype)
+        _fresh_work_tensors(module, work_dtype)
         if recast
-        else _cached_work_tensors(module, x.dtype)
+        else _cached_work_tensors(module, work_dtype)
     )
     return NoOutputRecomputeTuckerLinearFunction.apply(
-        x,
+        x.to(dtype=work_dtype),
         module.core_matrix,
         module.U1,
         module.U2,
