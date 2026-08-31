@@ -98,7 +98,7 @@ def _parameter_count_for_plan(
         planned_tucker += sum(
             int(mode) * int(rank)
             for mode, rank in zip(module.modes, module_ranks)
-        ) + math.prod(module_ranks)
+        ) + math.prod(module_ranks) - int(module.mode_layout != "balanced4")
     return _model_parameter_count(model) - current_tucker + planned_tucker
 
 
@@ -378,7 +378,8 @@ def _refresh_optimizer_structure(optimizer, module: torch.nn.Module) -> None:
             (r3, r4, r1, r2)
         )
     if hasattr(optimizer, "_muon_plans"):
-        for factor in (module.U1, module.U2, module.U3, module.U4):
+        for name in module.active_factor_names:
+            factor = getattr(module, name)
             if factor in optimizer._muon_plans:
                 optimizer._muon_plans[factor] = select_balanced_unfolding(
                     factor.shape
@@ -398,7 +399,7 @@ def _update_module_metadata(module: torch.nn.Module, ranks: RankTuple) -> None:
     module.rank_policy = ",".join(str(value) for value in ranks)
     module.tucker_parameter_count = sum(
         mode * rank for mode, rank in zip(module.modes, ranks)
-    ) + math.prod(ranks)
+    ) + math.prod(ranks) - int(module.mode_layout != "balanced4")
 
 
 def _update_model_metadata(model: torch.nn.Module) -> None:
@@ -463,15 +464,13 @@ def expand_tucker_model_to_plan_(
             raise ValueError(f"Progressive ranks for {name!r} exceed {module.modes}")
         if old_ranks == new_ranks:
             continue
+        active_factors = [
+            getattr(module, factor_name)
+            for factor_name in module.active_factor_names
+        ]
         if any(
             parameter.grad is not None
-            for parameter in (
-                module.core_matrix,
-                module.U1,
-                module.U2,
-                module.U3,
-                module.U4,
-            )
+            for parameter in (module.core_matrix, *active_factors)
         ):
             raise RuntimeError("Tucker ranks may only grow between optimizer steps")
 
@@ -485,6 +484,8 @@ def expand_tucker_model_to_plan_(
         for mode_index, (factor_name, target_rank) in enumerate(
             zip(factor_names, new_ranks)
         ):
+            if factor_name not in module.active_factor_names:
+                continue
             factor = getattr(module, factor_name)
             old_shape = tuple(factor.shape)
             expanded_factor = _orthogonal_complement(
@@ -660,9 +661,11 @@ class ProgressiveTuckerController:
         for name, module in modules.items():
             old = self.previous_ranks[name]
             new = tuple(module.ranks)
-            for factor, old_rank in zip(
-                (module.U1, module.U2, module.U3, module.U4), old
-            ):
+            for mode_index, factor_name in enumerate(("U1", "U2", "U3", "U4")):
+                if factor_name not in module.active_factor_names:
+                    continue
+                factor = getattr(module, factor_name)
+                old_rank = old[mode_index]
                 mask = torch.zeros_like(factor, dtype=torch.bool)
                 mask[:, old_rank:] = True
 

@@ -191,6 +191,19 @@ class TuckerLinearTest(unittest.TestCase):
                 )
                 self.assertIsNone(getattr(module, inactive_name).grad)
 
+                weight_before = module.materialize_weight(dtype=torch.float64)
+                module.retract_()
+                self.assertEqual(
+                    retract_tucker_modules_(module)["factors"],
+                    3,
+                )
+                torch.testing.assert_close(
+                    module.materialize_weight(dtype=torch.float64),
+                    weight_before,
+                    rtol=1e-10,
+                    atol=1e-10,
+                )
+
     def test_materialized_weight_has_dense_shape(self):
         for in_features, out_features in (
             (12, 18),

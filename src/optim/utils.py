@@ -372,6 +372,7 @@ _ARCHITECTURE_CONFIG_KEYS = (
     "tucker_gate_up_ranks",
     "tucker_down_ranks",
     "tucker_rank_plan",
+    "tucker_mode_layout",
     "tucker_progressive_stages",
     "tucker_progressive_warmup_steps",
     "tucker_progressive_seed",
@@ -420,6 +421,7 @@ def _architecture_metadata(model):
             "tucker_gate_up_ranks",
             "tucker_down_ranks",
             "tucker_rank_plan",
+            "tucker_mode_layout",
             "tucker_progressive_stages",
             "tucker_progressive_warmup_steps",
             "tucker_progressive_seed",
@@ -524,6 +526,8 @@ def load_checkpoint(
                 saved_value = False
             if key == "tucker_lr_scaling_mode" and key not in saved_architecture:
                 saved_value = "none"
+            if key == "tucker_mode_layout" and key not in saved_architecture:
+                saved_value = "balanced4"
             if (
                 key == "tucker_riemannian_muon_post_ns_project"
                 and key not in saved_architecture

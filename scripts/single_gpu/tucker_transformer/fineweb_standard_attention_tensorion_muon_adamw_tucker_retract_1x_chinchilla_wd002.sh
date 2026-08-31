@@ -27,6 +27,8 @@ TUCKER_RANKS=${TUCKER_RANKS:-""}
 TUCKER_ATTENTION_RANKS=${TUCKER_ATTENTION_RANKS:-""}
 TUCKER_GATE_UP_RANKS=${TUCKER_GATE_UP_RANKS:-""}
 TUCKER_DOWN_RANKS=${TUCKER_DOWN_RANKS:-""}
+TUCKER_RANK_PLAN=${TUCKER_RANK_PLAN:-""}
+TUCKER_MODE_LAYOUT=${TUCKER_MODE_LAYOUT:-balanced4}
 TUCKER_FORWARD_MODE=${TUCKER_FORWARD_MODE:-auto}
 TRAIN_ENTRY=${TRAIN_ENTRY:-src/main.py}
 TUCKER_VECTOR_TRANSPORT=${TUCKER_VECTOR_TRANSPORT:-0}
@@ -151,6 +153,11 @@ if [[ -n "${TUCKER_DOWN_RANKS}" ]]; then
     TUCKER_RANK_ARGS+=(--tucker-down-ranks "${TUCKER_DOWN_RANKS}")
     WANDB_TAGS+=("tucker-down-ranks-${TUCKER_DOWN_RANKS//,/x}")
 fi
+if [[ -n "${TUCKER_RANK_PLAN}" ]]; then
+    TUCKER_RANK_ARGS=(--tucker-rank-plan "${TUCKER_RANK_PLAN}")
+    WANDB_TAGS+=(adaptive-rank-plan)
+fi
+WANDB_TAGS+=("${TUCKER_MODE_LAYOUT}")
 if [[ "${SAVE_BEST_VAL_CHECKPOINT}" == "1" ]]; then
     BEST_VAL_CHECKPOINT_ARGS+=(--save-best-val-checkpoint)
     WANDB_TAGS+=(best-val-checkpoint)
@@ -221,6 +228,7 @@ fi
     --target-parameter-count "${TARGET_PARAMETER_COUNT}" \
     --target-parameter-tolerance "${TARGET_PARAMETER_TOLERANCE}" \
     "${TUCKER_RANK_ARGS[@]}" \
+    --tucker-mode-layout "${TUCKER_MODE_LAYOUT}" \
     ${PROGRESSIVE_ARGS[@]+"${PROGRESSIVE_ARGS[@]}"} \
     --tucker-forward-mode "${TUCKER_FORWARD_MODE}" \
     --no-tucker-equal-params \

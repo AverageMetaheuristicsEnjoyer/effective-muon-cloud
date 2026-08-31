@@ -124,30 +124,42 @@ def parse_tucker_rank_spec(
 def tucker_retract_(
     core: torch.Tensor,
     factors: list[torch.Tensor],
+    factor_modes: list[int] | None = None,
 ) -> torch.Tensor:
     """Make factor columns orthonormal without changing the Tucker tensor."""
-    if core.ndim != len(factors):
+    if factor_modes is None:
+        if core.ndim != len(factors):
+            raise ValueError(
+                f"Tucker core has {core.ndim} modes, but {len(factors)} factors "
+                "were provided."
+            )
+        factor_modes = list(range(len(factors)))
+    if (
+        len(factor_modes) != len(factors)
+        or len(set(factor_modes)) != len(factor_modes)
+    ):
         raise ValueError(
-            f"Tucker core has {core.ndim} modes, but {len(factors)} factors "
-            "were provided."
+            "Tucker factors and their distinct core modes must have matching lengths."
         )
+    if any(mode < 0 or mode >= core.ndim for mode in factor_modes):
+        raise ValueError("Tucker factor mode is outside the core order")
 
-    for mode, factor in enumerate(factors):
+    for factor_index, (mode, factor) in enumerate(zip(factor_modes, factors)):
         if factor.ndim != 2:
             raise ValueError(
-                f"Tucker factor {mode} must be a matrix, got shape "
+                f"Tucker factor {factor_index} must be a matrix, got shape "
                 f"{tuple(factor.shape)}."
             )
         if factor.shape[1] != core.shape[mode]:
             raise ValueError(
-                f"Tucker factor {mode} has rank {factor.shape[1]}, but core "
+                f"Tucker factor {factor_index} has rank {factor.shape[1]}, but core "
                 f"mode {mode} has size {core.shape[mode]}."
             )
 
         Q, R = torch.linalg.qr(factor, mode="reduced")
         signs = torch.sign(torch.diagonal(R))
         signs[signs == 0] = 1.0
-        factors[mode] = Q * signs
+        factors[factor_index] = Q * signs
         core = torch.tensordot(
             R * signs[:, None],
             core,
@@ -234,6 +246,7 @@ def tucker_retract_with_transport_(
     factors: list[torch.Tensor],
     core_tangent: torch.Tensor | None,
     factor_tangents: list[torch.Tensor | None],
+    factor_modes: list[int] | None = None,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -242,13 +255,25 @@ def tucker_retract_with_transport_(
 ]:
     """Gauge-fix Tucker parameters and push first-order state through the map."""
 
-    if len(factors) != core.ndim or len(factor_tangents) != len(factors):
-        raise ValueError("Core, factors, and factor tangents must have matching order.")
+    if factor_modes is None:
+        if len(factors) != core.ndim:
+            raise ValueError(
+                "Core, factors, and factor tangents must have matching order."
+            )
+        factor_modes = list(range(len(factors)))
+    if (
+        len(factor_tangents) != len(factors)
+        or len(factor_modes) != len(factors)
+        or len(set(factor_modes)) != len(factor_modes)
+    ):
+        raise ValueError("Factors, tangents, and distinct core modes must match.")
+    if any(mode < 0 or mode >= core.ndim for mode in factor_modes):
+        raise ValueError("Tucker factor mode is outside the core order")
 
     transported_factors: list[torch.Tensor] = []
     transported_tangents: list[torch.Tensor | None] = []
-    for mode, (factor, factor_tangent) in enumerate(
-        zip(factors, factor_tangents)
+    for mode, factor, factor_tangent in zip(
+        factor_modes, factors, factor_tangents
     ):
         Q, R, dQ, dR = qr_retract_with_transport(factor, factor_tangent)
         old_core = core
@@ -677,14 +702,17 @@ class TuckerLinear(nn.Module):
     def retract_(self) -> None:
         """Orthonormalize all factors while preserving the effective weight."""
         r1, r2, r3, r4 = self.ranks
-        factors = [self.U1, self.U2, self.U3, self.U4]
+        factor_modes = [
+            index
+            for index, name in enumerate(("U1", "U2", "U3", "U4"))
+            if name in self.active_factor_names
+        ]
+        parameters = [getattr(self, f"U{index + 1}") for index in factor_modes]
+        factors = list(parameters)
         core = self.core_matrix.reshape(r3, r4, r1, r2).permute(2, 3, 0, 1)
-        core = tucker_retract_(core, factors)
+        core = tucker_retract_(core, factors, factor_modes)
 
-        for parameter, retracted in zip(
-            (self.U1, self.U2, self.U3, self.U4),
-            factors,
-        ):
+        for parameter, retracted in zip(parameters, factors):
             parameter.copy_(retracted)
         self.core_matrix.copy_(
             core.permute(2, 3, 0, 1).reshape(r3 * r4, r1 * r2)
@@ -694,7 +722,12 @@ class TuckerLinear(nn.Module):
     def retract_with_optimizer_state_(self, optimizer) -> dict[str, int]:
         """Retract parameters and transport their first-order momentum state."""
 
-        factors = [self.U1, self.U2, self.U3, self.U4]
+        factor_modes = [
+            index
+            for index, name in enumerate(("U1", "U2", "U3", "U4"))
+            if name in self.active_factor_names
+        ]
+        factors = [getattr(self, f"U{index + 1}") for index in factor_modes]
         core_state = optimizer.state.get(self.core_matrix, {})
         factor_states = [optimizer.state.get(factor, {}) for factor in factors]
         core_momentum = core_state.get("momentum_buffer")
@@ -706,7 +739,7 @@ class TuckerLinear(nn.Module):
         if missing:
             raise RuntimeError(
                 "Tucker vector transport requires momentum_buffer state for "
-                f"the core and all four factors; {missing} buffers are missing."
+                f"the core and all active factors; {missing} buffers are missing."
             )
 
         r1, r2, r3, r4 = self.ranks
@@ -724,6 +757,7 @@ class TuckerLinear(nn.Module):
             factors,
             core_direction,
             factor_momenta,
+            factor_modes,
         )
 
         for parameter, retracted, state, transported in zip(
@@ -740,14 +774,15 @@ class TuckerLinear(nn.Module):
         core_state["momentum_buffer"].copy_(
             core_direction.permute(2, 3, 0, 1).reshape(r3 * r4, r1 * r2)
         )
-        return {"cores": 1, "factors": 4}
+        return {"cores": 1, "factors": len(factors)}
 
     @torch.no_grad()
     def max_factor_momentum_tangency_error(self, optimizer) -> torch.Tensor:
         """Return max relative error in Q.T M + M.T Q after transport."""
 
         errors = []
-        for factor in (self.U1, self.U2, self.U3, self.U4):
+        for name in self.active_factor_names:
+            factor = getattr(self, name)
             momentum = optimizer.state[factor]["momentum_buffer"]
             violation = factor.mT @ momentum + momentum.mT @ factor
             denominator = torch.linalg.vector_norm(momentum).clamp_min(1e-12)
@@ -758,7 +793,8 @@ class TuckerLinear(nn.Module):
     def max_factor_orthogonality_error(self) -> torch.Tensor:
         """Return max relative Frobenius error of ``U.T @ U`` from identity."""
         errors = []
-        for factor in (self.U1, self.U2, self.U3, self.U4):
+        for name in self.active_factor_names:
+            factor = getattr(self, name)
             gram = factor.T @ factor
             identity = torch.eye(
                 gram.shape[0],
@@ -828,7 +864,7 @@ def retract_tucker_modules_(
 
     result: dict[str, float | int] = {
         "modules": len(modules),
-        "factors": 4 * len(modules),
+        "factors": sum(len(module.active_factor_names) for module in modules),
         "transported_cores": transported_cores,
         "transported_factors": transported_factors,
     }

@@ -23,7 +23,7 @@ from optim.tensorion import TensorionOptimizer
 
 
 class TinyTuckerModel(nn.Module):
-    def __init__(self, ranks=(2, 2, 2, 2)):
+    def __init__(self, ranks=(2, 2, 2, 2), mode_layout="balanced4"):
         super().__init__()
         self.layer = TuckerLinear(
             16,
@@ -32,6 +32,7 @@ class TinyTuckerModel(nn.Module):
             bias=False,
             equal_params=False,
             forward_mode="materialize",
+            mode_layout=mode_layout,
             dtype=torch.float64,
         )
 
@@ -66,6 +67,47 @@ class ProgressiveTuckerCudaRegression(unittest.TestCase):
             self.assertTrue(torch.backends.cuda.matmul.allow_tf32)
         finally:
             torch.backends.cuda.matmul.allow_tf32 = previous
+
+    def test_order3_growth_keeps_singleton_buffer_and_optimizer_state(self):
+        torch.manual_seed(20260901)
+        model = TinyTuckerModel((2, 2, 3, 1), "order3_input")
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
+        _populate_sgd_momentum(model, optimizer)
+        model.layer.retract_with_optimizer_state_(optimizer)
+        optimizer.zero_grad(set_to_none=True)
+
+        singleton = model.layer.U4
+        before = model.layer.materialize_weight(dtype=torch.float64)
+        metrics = expand_tucker_model_to_plan_(
+            model,
+            optimizer,
+            {"layer": (3, 3, 5, 1)},
+            seed=29,
+            verify_function=True,
+            verify_rtol=1e-10,
+        )
+
+        self.assertEqual(metrics["expanded_modules"], 1)
+        self.assertIs(model.layer.U4, singleton)
+        self.assertIn("U4", dict(model.layer.named_buffers()))
+        self.assertNotIn("U4", dict(model.layer.named_parameters()))
+        self.assertEqual(model.layer.ranks, (3, 3, 5, 1))
+        torch.testing.assert_close(
+            model.layer.materialize_weight(dtype=torch.float64),
+            before,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+        for name in model.layer.active_factor_names:
+            factor = getattr(model.layer, name)
+            self.assertEqual(
+                optimizer.state[factor]["momentum_buffer"].shape,
+                factor.shape,
+            )
+
+        _populate_sgd_momentum(model, optimizer)
+        result = model.layer.retract_with_optimizer_state_(optimizer)
+        self.assertEqual(result, {"cores": 1, "factors": 3})
 
 
 def _populate_sgd_momentum(model, optimizer):

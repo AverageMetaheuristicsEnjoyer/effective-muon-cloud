@@ -466,11 +466,19 @@ def main(args):
         from models.tucker_linear import TuckerLinear
 
         raw_tucker_factor_parameters = {
-            factor
+            getattr(module, name)
             for module in raw_model.modules()
             if isinstance(module, TuckerLinear)
-            for factor in (module.U1, module.U2, module.U3, module.U4)
+            for name in module.active_factor_names
         }
+        if args.tucker_lr_scaling_mode != "none" and any(
+            module.mode_layout != "balanced4"
+            for module in raw_model.modules()
+            if isinstance(module, TuckerLinear)
+        ):
+            raise ValueError(
+                "Coupled Tucker LR scaling is not defined for order-3 layouts"
+            )
         if args.tucker_lr_scaling_mode != "none":
             if not args.tucker_riemannian_muon:
                 raise ValueError(

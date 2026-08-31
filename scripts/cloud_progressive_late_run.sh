@@ -195,7 +195,11 @@ PY
 fi
 
 if [[ "${MODE}" == "correctness" ]]; then
-    python -m unittest tests.test_progressive_tucker tests.test_tucker_chunked
+    python -m unittest \
+        tests.test_progressive_tucker \
+        tests.test_tucker_chunked \
+        tests.test_tucker_linear \
+        tests.test_tucker_benchmark
     TUCKER_CUSTOM_CACHE_POLICY=recast \
         python experiments/fused_persistent_tucker/custom_backward/test_correctness.py
     exit 0
@@ -269,7 +273,26 @@ case "${MODE}" in
         export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
-    *) echo "Expected mode: preflight, resume-preflight, archive-225, archive-169, repair-python, peek, disk, correctness, diagnose-169-growth, inspect-225-checkpoint, inspect-169-checkpoint, smoke225, 225, or 169" >&2; exit 2 ;;
+    order3|smoke-order3)
+        TUCKER_MODE_LAYOUT=${2:?order3 mode requires order3_input or order3_output}
+        case "${TUCKER_MODE_LAYOUT}" in
+            order3_input|order3_output) ;;
+            *) echo "Expected order3_input or order3_output" >&2; exit 2 ;;
+        esac
+        TUCKER_RANK_PLAN="${ROOT}/plans/${TUCKER_MODE_LAYOUT}-225m-rank8.json"
+        python scripts/make_tucker_order3_rank_plan.py \
+            --layout "${TUCKER_MODE_LAYOUT}" \
+            --profile progressive_225m_rank8 \
+            --output "${TUCKER_RANK_PLAN}"
+        export TUCKER_MODE_LAYOUT TUCKER_RANK_PLAN
+        LAUNCHER=scripts/launch_tucker3_225_to_257_late_custom_backward.sh
+        if [[ "${MODE}" == "smoke-order3" ]]; then
+            export EXPERIMENT_NAME="llama257m_tucker3_${TUCKER_MODE_LAYOUT}_late_225m_to_257m_customfb_bs16acc8_smoke"
+            export ITERATIONS=2 WARMUP=1 EVAL_BATCHES=1 LATEST_CKPT_INTERVAL=2
+            export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
+        fi
+        ;;
+    *) echo "Expected a documented preflight, inspection, smoke, or training mode" >&2; exit 2 ;;
 esac
 
 export RESULTS_DIR="${ROOT}/exps"
