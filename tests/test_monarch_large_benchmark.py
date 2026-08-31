@@ -25,30 +25,32 @@ from models.monarch import apply_monarch
 class MonarchLargeBenchmarkTest(unittest.TestCase):
     def test_model_ramp_and_verified_parameter_counts(self):
         dense = [spec["dense_params_expected"] for spec in MODEL_SPECS]
-        monarch = [spec["monarch_params_expected"] for spec in MODEL_SPECS]
         self.assertEqual(dense, sorted(dense))
-        self.assertEqual(monarch, sorted(monarch))
         self.assertGreater(dense[-1], 6_800_000_000)
         self.assertLess(dense[-1], 7_000_000_000)
-        self.assertTrue(all(m < d for m, d in zip(monarch, dense)))
+        for blocks in (2, 4):
+            monarch = [spec["monarch_params_expected"][blocks] for spec in MODEL_SPECS]
+            self.assertEqual(monarch, sorted(monarch))
+            self.assertTrue(all(m < d for m, d in zip(monarch, dense)))
 
     def test_meta_models_match_declared_parameter_counts(self):
         with torch.device("meta"):
             for spec in MODEL_SPECS:
-                with self.subTest(model=spec["name"]):
-                    config = make_config(spec, sequence_length=256)
-                    dense = Llama(config)
-                    self.assertEqual(
-                        sum(parameter.numel() for parameter in dense.parameters()),
-                        spec["dense_params_expected"],
-                    )
-                    monarch = Llama(config)
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        apply_monarch(monarch, nblocks=4, verbose=False)
-                    self.assertEqual(
-                        sum(parameter.numel() for parameter in monarch.parameters()),
-                        spec["monarch_params_expected"],
-                    )
+                config = make_config(spec, sequence_length=256)
+                dense = Llama(config)
+                self.assertEqual(
+                    sum(parameter.numel() for parameter in dense.parameters()),
+                    spec["dense_params_expected"],
+                )
+                for blocks in (2, 4):
+                    with self.subTest(model=spec["name"], blocks=blocks):
+                        monarch = Llama(config)
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            apply_monarch(monarch, nblocks=blocks, verbose=False)
+                        self.assertEqual(
+                            sum(parameter.numel() for parameter in monarch.parameters()),
+                            spec["monarch_params_expected"][blocks],
+                        )
 
     def test_statistics_are_deterministic(self):
         values = [1.0, 2.0, 3.0, 4.0]

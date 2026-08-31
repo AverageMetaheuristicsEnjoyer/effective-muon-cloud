@@ -71,15 +71,18 @@ def comparison(results: list[dict]) -> dict:
         adamw = by_key[(model["name"], "dense_adamw")]
         muon = by_key[(model["name"], "dense_muon")]
         monarch_ms = monarch["summary"]["host_total_ms"]["median"]
+        monarch_parameters = model["monarch_params_expected"][
+            monarch["benchmark"]["monarch_blocks"]
+        ]
         rows.append(
             {
                 "model": model["name"],
                 "label": model["label"],
                 "dense_equivalent_parameters": model["dense_params_expected"],
-                "monarch_parameters": model["monarch_params_expected"],
+                "monarch_parameters": monarch_parameters,
                 "speedup_vs_adamw": adamw["summary"]["host_total_ms"]["median"] / monarch_ms,
                 "speedup_vs_muon": muon["summary"]["host_total_ms"]["median"] / monarch_ms,
-                "parameter_fraction": model["monarch_params_expected"] / model["dense_params_expected"],
+                "parameter_fraction": monarch_parameters / model["dense_params_expected"],
             }
         )
     return {"rows": rows, "largest": rows[-1]}

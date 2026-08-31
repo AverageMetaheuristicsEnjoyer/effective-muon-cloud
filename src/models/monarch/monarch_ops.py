@@ -149,7 +149,7 @@ def _butterfly_fwd_blocked(x2, w1_bfly, w2_bfly):
     x_r = x2.reshape(B, k, p).transpose(0, 1)
     out1 = torch.empty(B, k, q, device=x2.device, dtype=x2.dtype).transpose(0, 1)
     out1 = torch.bmm(x_r, w1_bfly.transpose(-1, -2), out=out1)
-    if _USE_FAST_RIFFLE and l == k == 4 and q % 4 == 0:
+    if _USE_FAST_RIFFLE and l == k and l in (2, 4) and q % l == 0:
         from . import monarch_riffle
         out1 = monarch_riffle.riffle_triton(out1.transpose(0, 1), B, l, q)
     else:
@@ -187,7 +187,7 @@ def _butterfly_blk_bwd_op(x2: torch.Tensor, w1_bfly: torch.Tensor,
     # blocked grad -> (l, B, s) strided VIEW: no gather copy needed
     dout_reshaped = dout_blk.permute(1, 0, 2)
     dw2 = torch.bmm(dout_reshaped.transpose(-1, -2), out1)
-    if _USE_FAST_RIFFLE and l == k == 4 and q % 4 == 0:
+    if _USE_FAST_RIFFLE and l == k and l in (2, 4) and q % l == 0:
         from . import monarch_riffle
         dt = torch.empty(l, B, r, device=x2.device, dtype=x2.dtype)
         torch.bmm(dout_reshaped, w2_bfly, out=dt)

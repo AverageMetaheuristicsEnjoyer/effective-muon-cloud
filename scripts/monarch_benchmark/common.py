@@ -18,7 +18,7 @@ MODEL_SPECS = (
         "n_head": 8,
         "intermediate_size": 0,
         "dense_params_expected": 257_188_864,
-        "monarch_params_expected": 163_603_456,
+        "monarch_params_expected": {2: 224_158_720, 4: 163_603_456},
     },
     {
         "name": "834m",
@@ -28,7 +28,7 @@ MODEL_SPECS = (
         "n_head": 12,
         "intermediate_size": 0,
         "dense_params_expected": 834_086_400,
-        "monarch_params_expected": 423_568_896,
+        "monarch_params_expected": {2: 692_528_640, 4: 423_568_896},
     },
     {
         "name": "1p4b",
@@ -38,7 +38,7 @@ MODEL_SPECS = (
         "n_head": 16,
         "intermediate_size": 0,
         "dense_params_expected": 1_439_270_912,
-        "monarch_params_expected": 690_587_648,
+        "monarch_params_expected": {2: 1_175_029_760, 4: 690_587_648},
     },
     {
         "name": "3p5b",
@@ -48,7 +48,7 @@ MODEL_SPECS = (
         "n_head": 24,
         "intermediate_size": 0,
         "dense_params_expected": 3_480_136_704,
-        "monarch_params_expected": 1_564_388_352,
+        "monarch_params_expected": {2: 2_819_533_824, 4: 1_564_388_352},
     },
     {
         "name": "6p9b",
@@ -58,7 +58,7 @@ MODEL_SPECS = (
         "n_head": 32,
         "intermediate_size": 11008,
         "dense_params_expected": 6_888_361_984,
-        "monarch_params_expected": 2_970_882_048,
+        "monarch_params_expected": {2: 5_529_407_488, 4: 2_970_882_048},
     },
 )
 

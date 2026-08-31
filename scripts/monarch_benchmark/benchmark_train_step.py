@@ -286,7 +286,7 @@ def run(args) -> dict:
     model, optimizer = build_model_and_optimizer(args, spec, device)
     actual_parameters = sum(parameter.numel() for parameter in model.parameters())
     expected_parameters = (
-        spec["monarch_params_expected"]
+        spec["monarch_params_expected"][args.monarch_blocks]
         if args.variant == "monarch_muon"
         else spec["dense_params_expected"]
     )
