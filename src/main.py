@@ -453,6 +453,8 @@ def main(args):
             adamw_params=adamw_params,
             lr=args.lr,
             momentum=args.momentum,
+            nesterov=args.nesterov,
+            muon_weight_decay=args.weight_decay,
             adamw_betas=(args.beta1, args.beta2),
             adamw_weight_decay=args.weight_decay,
             adamw_eps=args.eps,

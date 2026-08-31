@@ -11,6 +11,7 @@ from torch.nn.parallel import DistributedDataParallel
 from models.monarch import MonarchLinear, patch_monarch_linear
 from models.monarch.monarch_linear import blockdiag_butterfly_multiply
 from models.monarch.monarch_ops import butterfly_blk
+from models.monarch.monarch_muon import MonarchMuonOptimizer, _newton_schulz_batched
 
 
 def gpu_uuid(index: int) -> str:
@@ -50,6 +51,33 @@ def check_fast_riffle(device: torch.device) -> dict[int, float]:
     return errors
 
 
+def check_muon_semantics(device: torch.device) -> float:
+    torch.manual_seed(314)
+    parameter = torch.nn.Parameter(torch.randn(2, 8, 12, device=device))
+    gradient = torch.randn_like(parameter)
+    initial = parameter.detach().clone()
+    lr, momentum, weight_decay = 1e-2, 0.9, 0.1
+    expected_update = _newton_schulz_batched(gradient * (1.0 + momentum))
+    expected = initial * (1.0 - lr * weight_decay)
+    expected.add_(expected_update, alpha=-lr * (8 / 12) ** 0.5)
+
+    parameter.grad = gradient
+    optimizer = MonarchMuonOptimizer(
+        [parameter],
+        [],
+        lr=lr,
+        momentum=momentum,
+        nesterov=True,
+        muon_weight_decay=weight_decay,
+        ns_dtype=torch.float32,
+    )
+    optimizer.step()
+    error = (parameter - expected).abs().max().item()
+    if error > 1e-6:
+        raise RuntimeError(f"Muon Nesterov/weight-decay mismatch: max_abs_error={error}")
+    return error
+
+
 def main() -> None:
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -77,6 +105,7 @@ def main() -> None:
                 raise RuntimeError(f"duplicate {field}: {identities}")
 
     errors = check_fast_riffle(device)
+    muon_error = check_muon_semantics(device)
 
     torch.manual_seed(1234)
     model = torch.nn.Sequential(
@@ -107,6 +136,7 @@ def main() -> None:
                     "world_size": world_size,
                     "processes": identities,
                     "fast_riffle_max_abs_error": errors,
+                    "muon_semantics_max_abs_error": muon_error,
                     "ddp_parameters_synchronized": True,
                     "nested_torchrun": False,
                 },

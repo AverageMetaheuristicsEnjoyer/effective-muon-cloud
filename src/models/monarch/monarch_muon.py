@@ -16,6 +16,8 @@ Usage (from main.py):
         adamw_params=adamw_params,
         lr=args.lr,
         momentum=args.momentum,
+        nesterov=args.nesterov,
+        muon_weight_decay=args.weight_decay,
         adamw_betas=(args.beta1, args.beta2),
         adamw_weight_decay=args.weight_decay,
         adamw_eps=args.eps,
@@ -82,6 +84,10 @@ class MonarchMuonOptimizer(torch.optim.Optimizer):
         Base learning rate, shared by both groups (scheduler will scale it).
     momentum : float
         Momentum for the Muon group.
+    nesterov : bool
+        Use the same Nesterov momentum rule as the dense Muon optimizer.
+    muon_weight_decay : float
+        Decoupled weight decay for the Monarch factor group.
     adamw_betas : tuple[float, float]
         (beta1, beta2) for the AdamW group.
     adamw_weight_decay : float
@@ -97,6 +103,8 @@ class MonarchMuonOptimizer(torch.optim.Optimizer):
         *,
         lr: float = 5e-3,
         momentum: float = 0.95,
+        nesterov: bool = True,
+        muon_weight_decay: float = 0.1,
         adamw_betas: tuple[float, float] = (0.9, 0.95),
         adamw_weight_decay: float = 0.1,
         adamw_eps: float = 1e-8,
@@ -114,6 +122,8 @@ class MonarchMuonOptimizer(torch.optim.Optimizer):
                 "params": muon_params,
                 "update_type": "muon",
                 "momentum": momentum,
+                "nesterov": nesterov,
+                "weight_decay": muon_weight_decay,
             },
             {
                 "params": adamw_params,
@@ -157,6 +167,7 @@ class MonarchMuonOptimizer(torch.optim.Optimizer):
 
     def _muon_step(self, group: dict, lr: float) -> None:
         momentum = group["momentum"]
+        weight_decay = group["weight_decay"]
 
         params = [p for p in group["params"] if p.grad is not None]
         bufs = [self._get_momentum_buffer(p) for p in params]
@@ -170,17 +181,24 @@ class MonarchMuonOptimizer(torch.optim.Optimizer):
             for buf, grad in zip(bufs, grads):
                 buf.mul_(momentum).add_(grad)
 
+        if weight_decay > 0:
+            for param in params:
+                param.data.mul_(1.0 - lr * weight_decay)
+
+        updates = [buf.mul(momentum).add(grad) for buf, grad in zip(bufs, grads)] \
+            if group["nesterov"] else bufs
+
         # Accumulate 3-D params by (device, dtype, a, b) for batched NS
         grouped_3d: dict = defaultdict(list)
-        for param, buf in zip(params, bufs):
-            if buf.ndim == 3:
-                key = (buf.device, buf.dtype, buf.shape[1], buf.shape[2])
-                grouped_3d[key].append((param, buf))
+        for param, update in zip(params, updates):
+            if update.ndim == 3:
+                key = (update.device, update.dtype, update.shape[1], update.shape[2])
+                grouped_3d[key].append((param, update))
             else:
                 # 2-D (or higher flattened to 2-D) — regular NS
-                reshaped = buf.reshape(buf.shape[0], -1) if buf.ndim > 2 else buf
+                reshaped = update.reshape(update.shape[0], -1) if update.ndim > 2 else update
                 ortho = _newton_schulz(
-                    reshaped.to(self.ns_dtype)).to(buf.dtype).reshape_as(buf)
+                    reshaped.to(self.ns_dtype)).to(update.dtype).reshape_as(update)
                 scale = (reshaped.shape[0] / reshaped.shape[1]) ** 0.5
                 param.data.add_(ortho, alpha=-lr * scale)
 
