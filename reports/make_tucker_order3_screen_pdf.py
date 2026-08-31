@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 
@@ -45,15 +46,30 @@ def main() -> None:
     parser.add_argument("--job", required=True)
     args = parser.parse_args()
 
-    payload = json.loads(args.input.read_text())
-    completed = [
-        item for item in payload["results"] if item.get("status") == "complete"
-    ]
+    input_is_tsv = args.input.suffix == ".tsv"
+    if input_is_tsv:
+        with args.input.open(newline="") as handle:
+            completed = [
+                row
+                for row in csv.DictReader(handle, delimiter="\t")
+                if row.get("status") == "complete"
+            ]
+    else:
+        payload = json.loads(args.input.read_text())
+        completed = [
+            item for item in payload["results"] if item.get("status") == "complete"
+        ]
+
+    def benchmark(item, key):
+        if input_is_tsv:
+            return item[key.removeprefix("tucker_") if key.startswith("tucker_") else key]
+        return item["benchmark"][key]
+
     points = {
         (
-            item["benchmark"]["tucker_rank_profile"],
-            item["benchmark"]["tucker_mode_layout"],
-            int(item["benchmark"]["microbatch"]),
+            benchmark(item, "tucker_rank_profile"),
+            benchmark(item, "tucker_mode_layout"),
+            int(benchmark(item, "microbatch")),
         ): item
         for item in completed
     }
@@ -66,6 +82,33 @@ def main() -> None:
     missing = sorted(expected - set(points))
     if missing:
         raise ValueError(f"Missing completed benchmark points: {missing}")
+
+    def parameter_value(item, key):
+        if input_is_tsv:
+            column = {
+                "actual_parameters": "parameters",
+                "parameter_difference_from_dense": "difference_from_dense",
+            }[key]
+            return int(item[column])
+        return int(item["model"][key])
+
+    def time_value(item, key):
+        if input_is_tsv:
+            column = "median_ms" if key == "host_total_ms" else key
+            return float(item[column])
+        return float(item["summary"][key]["median"])
+
+    def memory_value(item, key):
+        if input_is_tsv:
+            column = {
+                "forward_backward_peak_allocated_bytes": "forward_backward_peak_gb",
+                "peak_allocated_bytes": "full_peak_gb",
+            }[key]
+            return float(item[column]) * 1e9
+        return float(item["memory"][key])
+
+    def gpu_name(item):
+        return item["gpu"] if input_is_tsv else item["gpu"]["name"]
 
     def rows_for(getter, digits=1):
         rows = []
@@ -82,11 +125,11 @@ def main() -> None:
         return rows
 
     time_metrics = (
-        ("Forward, ms", lambda item: item["summary"]["forward_ms"]["median"]),
-        ("Backward, ms", lambda item: item["summary"]["backward_ms"]["median"]),
-        ("Optimizer, ms", lambda item: item["summary"]["optimizer_ms"]["median"]),
-        ("Retraction, ms", lambda item: item["summary"]["retraction_ms"]["median"]),
-        ("Full step, ms", lambda item: item["summary"]["host_total_ms"]["median"]),
+        ("Forward, ms", lambda item: time_value(item, "forward_ms")),
+        ("Backward, ms", lambda item: time_value(item, "backward_ms")),
+        ("Optimizer, ms", lambda item: time_value(item, "optimizer_ms")),
+        ("Retraction, ms", lambda item: time_value(item, "retraction_ms")),
+        ("Full step, ms", lambda item: time_value(item, "host_total_ms")),
     )
     sections = []
     parameter_rows = []
@@ -97,8 +140,8 @@ def main() -> None:
                 [
                     PROFILE_LABELS[profile],
                     LAYOUT_LABELS[layout],
-                    f"{item['model']['actual_parameters']:,}",
-                    f"{item['model']['parameter_difference_from_dense']:+,}",
+                    f"{parameter_value(item, 'actual_parameters'):,}",
+                    f"{parameter_value(item, 'parameter_difference_from_dense'):+,}",
                 ]
             )
     sections.extend(
@@ -128,9 +171,9 @@ def main() -> None:
             r"\section{Forward+backward peak allocated, GB}",
             render_table(
                 rows_for(
-                    lambda item: item["memory"][
-                        "forward_backward_peak_allocated_bytes"
-                    ]
+                    lambda item: memory_value(
+                        item, "forward_backward_peak_allocated_bytes"
+                    )
                     / 1e9,
                     digits=2,
                 ),
@@ -140,7 +183,7 @@ def main() -> None:
             r"\section{Full-step peak allocated, GB}",
             render_table(
                 rows_for(
-                    lambda item: item["memory"]["peak_allocated_bytes"] / 1e9,
+                    lambda item: memory_value(item, "peak_allocated_bytes") / 1e9,
                     digits=2,
                 ),
                 ["Budget", "Layout", r"MB 1$\times$16", r"MB 16$\times$1"],
@@ -153,9 +196,7 @@ def main() -> None:
     for profile in PROFILE_LABELS:
         for batch in (1, 16):
             candidates = {
-                layout: points[(profile, layout, batch)]["summary"]["host_total_ms"][
-                    "median"
-                ]
+                layout: time_value(points[(profile, layout, batch)], "host_total_ms")
                 for layout in LAYOUT_LABELS
             }
             winner = min(
@@ -185,7 +226,7 @@ def main() -> None:
                 [
                     ["Commit", rf"\texttt{{{tex(args.commit)}}}"],
                     ["Cloud job", rf"\texttt{{{tex(args.job)}}}"],
-                    ["GPU", tex(completed[0]["gpu"]["name"])],
+                    ["GPU", tex(gpu_name(completed[0]))],
                     ["Samples", "3 warmup + 12 measured"],
                 ],
                 ["Field", "Value"],
