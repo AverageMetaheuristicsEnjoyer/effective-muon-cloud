@@ -336,9 +336,7 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path):
         "itr": itr,
     }
     ckpt_dir.mkdir(exist_ok=True, parents=True)
-    tmp_path = ckpt_dir / "main.pt.tmp"
-    torch.save(checkpoint, tmp_path)
-    tmp_path.replace(ckpt_dir / "main.pt")
+    torch.save(checkpoint, ckpt_dir / "main.pt")
 
 
 def load_checkpoint(
@@ -376,9 +374,7 @@ def save_worker_state(ckpt_dir: Path, train_reader=None):
         worker_state["train_reader_state"] = train_reader.state_dict()
     rank = 0 if not dist.is_initialized() else dist.get_rank()
     ckpt_dir.mkdir(exist_ok=True, parents=True)
-    tmp_path = ckpt_dir / f"worker_{rank}.pt.tmp"
-    torch.save(worker_state, tmp_path)
-    tmp_path.replace(ckpt_dir / f"worker_{rank}.pt")
+    torch.save(worker_state, ckpt_dir / f"worker_{rank}.pt")
 
 
 def load_worker_state(ckpt_dir: Path, train_reader=None):
