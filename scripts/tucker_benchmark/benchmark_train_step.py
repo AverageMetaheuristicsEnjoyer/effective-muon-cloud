@@ -403,7 +403,9 @@ def run(args) -> dict:
     variant = variant_spec(args.variant)
     if args.variant in TUCKER_VARIANTS:
         geometry, _, tucker_parameters, _ = tucker_benchmark_plan(
-            args.model_size, args.tucker_rank_profile
+            args.model_size,
+            args.tucker_rank_profile,
+            args.tucker_mode_layout,
         )
     else:
         geometry = model_geometry(args.model_size)
