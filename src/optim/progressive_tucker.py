@@ -1,4 +1,4 @@
-"""Function-preserving progressive rank growth for Tucker language models.
+"""Progressive Tucker rank changes for language models.
 
 The controller in this module grows the ranks of existing ``TuckerLinear``
 parameters while preserving their positions in optimizer parameter groups and
@@ -64,9 +64,31 @@ def parse_progressive_stages(values: Sequence[str]) -> tuple[tuple[int, int], ..
         raise ValueError("The first progressive Tucker stage must start at step 0")
     if any(right[0] <= left[0] for left, right in zip(parsed, parsed[1:])):
         raise ValueError("Progressive Tucker steps must be strictly increasing")
-    if any(right[1] <= left[1] for left, right in zip(parsed, parsed[1:])):
-        raise ValueError("Progressive Tucker parameter targets must strictly increase")
+    target_deltas = [right[1] - left[1] for left, right in zip(parsed, parsed[1:])]
+    if target_deltas and not (
+        all(delta > 0 for delta in target_deltas)
+        or all(delta < 0 for delta in target_deltas)
+    ):
+        raise ValueError(
+            "Progressive Tucker parameter targets must be strictly monotone"
+        )
     return tuple(parsed)
+
+
+def _parse_rank_tuple(value: str | None) -> RankTuple | None:
+    if value is None:
+        return None
+    try:
+        ranks = tuple(int(part.strip()) for part in value.split(","))
+    except ValueError as error:
+        raise ValueError(
+            "--tucker-progressive-final-ranks must contain four positive integers"
+        ) from error
+    if len(ranks) != 4 or any(rank <= 0 for rank in ranks):
+        raise ValueError(
+            "--tucker-progressive-final-ranks must contain four positive integers"
+        )
+    return ranks  # type: ignore[return-value]
 
 
 def _tucker_modules(model: torch.nn.Module) -> dict[str, torch.nn.Module]:
@@ -127,6 +149,7 @@ def build_progressive_rank_stages(
     model: torch.nn.Module,
     stage_specs: Sequence[tuple[int, int]],
     *,
+    final_ranks: RankTuple | None = None,
     search_resolution: int = 4096,
 ) -> tuple[ProgressiveStage, ...]:
     """Find monotone proportional rank plans nearest the requested budgets."""
@@ -141,7 +164,7 @@ def build_progressive_rank_stages(
                 "has an equal-parameter residual"
             )
 
-    start: RankPlan = {
+    current: RankPlan = {
         name: tuple(int(rank) for rank in module.ranks)
         for name, module in modules.items()
     }
@@ -149,9 +172,33 @@ def build_progressive_rank_stages(
         name: tuple(int(mode) for mode in module.modes)
         for name, module in modules.items()
     }
+    growing = stage_specs[-1][1] > stage_specs[0][1]
+    if growing:
+        low, high = current, full
+    else:
+        if final_ranks is None:
+            raise ValueError(
+                "A decreasing progressive schedule requires "
+                "--tucker-progressive-final-ranks"
+            )
+        low = {
+            name: tuple(int(rank) for rank in final_ranks)
+            for name in modules
+        }
+        high = current
+        for name, module in modules.items():
+            if any(rank > mode for rank, mode in zip(low[name], module.modes)):
+                raise ValueError(
+                    f"Final progressive ranks for {name!r} exceed {module.modes}"
+                )
+            if any(rank > old for rank, old in zip(low[name], current[name])):
+                raise ValueError(
+                    f"Final progressive ranks for {name!r} must not exceed "
+                    f"the initial ranks: {current[name]} -> {low[name]}"
+                )
     current_parameters = _model_parameter_count(model)
     full_parameters = _parameter_count_for_plan(model, modules, full)
-    if stage_specs[-1][1] > full_parameters:
+    if growing and stage_specs[-1][1] > full_parameters:
         raise ValueError(
             f"Final progressive target {stage_specs[-1][1]:,} exceeds the "
             f"full-rank model size {full_parameters:,}"
@@ -160,7 +207,7 @@ def build_progressive_rank_stages(
     candidates: list[tuple[int, RankPlan]] = []
     last_plan: RankPlan | None = None
     for index in range(search_resolution + 1):
-        plan = _interpolated_plan(start, full, index, search_resolution)
+        plan = _interpolated_plan(low, high, index, search_resolution)
         if plan == last_plan:
             continue
         candidates.append((_parameter_count_for_plan(model, modules, plan), plan))
@@ -171,18 +218,26 @@ def build_progressive_rank_stages(
             step=stage_specs[0][0],
             target_parameters=stage_specs[0][1],
             actual_parameters=current_parameters,
-            ranks=start,
+            ranks=current,
         )
     ]
     previous_actual = current_parameters
     for step, target in stage_specs[1:]:
-        eligible = [candidate for candidate in candidates if candidate[0] >= previous_actual]
+        eligible = [
+            candidate
+            for candidate in candidates
+            if (
+                candidate[0] >= previous_actual
+                if growing
+                else candidate[0] <= previous_actual
+            )
+        ]
         actual, plan = min(
             eligible,
             key=lambda item: (
                 abs(item[0] - target),
-                item[0] > target,
-                item[0],
+                item[0] > target if growing else item[0] < target,
+                item[0] if growing else -item[0],
             ),
         )
         stages.append(
@@ -196,8 +251,11 @@ def build_progressive_rank_stages(
         previous_actual = actual
 
     for left, right in zip(stages, stages[1:]):
-        for name in start:
-            if any(a > b for a, b in zip(left.ranks[name], right.ranks[name])):
+        for name in current:
+            if any(
+                a > b if growing else a < b
+                for a, b in zip(left.ranks[name], right.ranks[name])
+            ):
                 raise AssertionError("Rank-plan search produced a non-monotone stage")
     return tuple(stages)
 
@@ -256,6 +314,63 @@ def _expanded_core(
     return new_core.reshape(new_r3 * new_r4, new_r1 * new_r2)
 
 
+def _mode_product(
+    tensor: torch.Tensor,
+    matrix: torch.Tensor,
+    mode: int,
+) -> torch.Tensor:
+    result = torch.tensordot(matrix, tensor, dims=([1], [mode]))
+    return result.movedim(0, mode)
+
+
+def _truncated_hosvd(
+    module: torch.nn.Module,
+    new_ranks: RankTuple,
+) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor]]:
+    old_ranks: RankTuple = tuple(int(rank) for rank in module.ranks)
+    work_dtype = (
+        torch.float64
+        if module.core_matrix.dtype == torch.float64
+        else torch.float32
+    )
+    core = module.core_matrix.detach().to(dtype=work_dtype).reshape(
+        old_ranks[2], old_ranks[3], old_ranks[0], old_ranks[1]
+    ).permute(2, 3, 0, 1)
+    bases = []
+    for mode, (old_rank, new_rank) in enumerate(zip(old_ranks, new_ranks)):
+        if old_rank == new_rank:
+            basis = torch.eye(
+                old_rank,
+                device=core.device,
+                dtype=work_dtype,
+            )
+        else:
+            unfolding = core.movedim(mode, 0).reshape(old_rank, -1)
+            basis = torch.linalg.svd(
+                unfolding,
+                full_matrices=False,
+            ).U[:, :new_rank]
+        bases.append(basis)
+
+    factors = [
+        (factor.detach().to(dtype=work_dtype) @ basis)
+        .to(dtype=factor.dtype)
+        .contiguous()
+        for factor, basis in zip(
+            (module.U1, module.U2, module.U3, module.U4),
+            bases,
+        )
+    ]
+    for mode, basis in enumerate(bases):
+        core = _mode_product(core, basis.mT, mode)
+    r1, r2, r3, r4 = new_ranks
+    core_matrix = core.permute(2, 3, 0, 1).reshape(
+        r3 * r4,
+        r1 * r2,
+    ).to(dtype=module.core_matrix.dtype).contiguous()
+    return factors, core_matrix, bases
+
+
 def _clear_shape_dependent_scaler_state(state: dict) -> None:
     for key in tuple(state):
         if (
@@ -301,6 +416,54 @@ def _resize_core_optimizer_state(
     for key, value in tuple(state.items()):
         if isinstance(value, torch.Tensor) and tuple(value.shape) == old_shape:
             state[key] = _expanded_core(value, old_ranks, new_ranks)
+
+
+def _project_factor_optimizer_state(
+    optimizer,
+    parameter: torch.nn.Parameter,
+    basis: torch.Tensor,
+) -> None:
+    if optimizer is None:
+        return
+    state = optimizer.state.get(parameter)
+    if not state:
+        return
+    _clear_shape_dependent_scaler_state(state)
+    old_shape = tuple(parameter.shape)
+    for key, value in tuple(state.items()):
+        if isinstance(value, torch.Tensor) and tuple(value.shape) == old_shape:
+            state[key] = (
+                value.to(dtype=basis.dtype) @ basis
+            ).to(dtype=value.dtype).contiguous()
+
+
+def _project_core_optimizer_state(
+    optimizer,
+    parameter: torch.nn.Parameter,
+    old_ranks: RankTuple,
+    new_ranks: RankTuple,
+    bases: Sequence[torch.Tensor],
+) -> None:
+    if optimizer is None:
+        return
+    state = optimizer.state.get(parameter)
+    if not state:
+        return
+    _clear_shape_dependent_scaler_state(state)
+    old_shape = (old_ranks[2] * old_ranks[3], old_ranks[0] * old_ranks[1])
+    for key, value in tuple(state.items()):
+        if not isinstance(value, torch.Tensor) or tuple(value.shape) != old_shape:
+            continue
+        projected = value.to(dtype=bases[0].dtype).reshape(
+            old_ranks[2], old_ranks[3], old_ranks[0], old_ranks[1]
+        ).permute(2, 3, 0, 1)
+        for mode, basis in enumerate(bases):
+            projected = _mode_product(projected, basis.mT, mode)
+        r1, r2, r3, r4 = new_ranks
+        state[key] = projected.permute(2, 3, 0, 1).reshape(
+            r3 * r4,
+            r1 * r2,
+        ).to(dtype=value.dtype).contiguous()
 
 
 def _replace_parameter_(
@@ -441,7 +604,7 @@ def expand_tucker_model_to_plan_(
     seed: int,
     verify_function: bool = True,
     verify_rtol: float = 5e-5,
-) -> dict[str, float | int]:
+) -> dict[str, float | int | str]:
     """Expand every requested Tucker module and migrate optimizer references."""
 
     modules = _tucker_modules(model)
@@ -549,10 +712,151 @@ def expand_tucker_model_to_plan_(
     _update_model_metadata(model)
     return {
         "expanded_modules": expanded_modules,
+        "shrunk_modules": 0,
         "parameters": _model_parameter_count(model),
         "max_absolute_function_error": max_absolute_error,
         "max_relative_function_error": max_relative_error,
+        "direction": "grow",
     }
+
+
+@torch.no_grad()
+def shrink_tucker_model_to_plan_(
+    model: torch.nn.Module,
+    optimizer,
+    ranks: Mapping[str, Sequence[int]],
+    *,
+    measure_error: bool = True,
+) -> dict[str, float | int | str]:
+    """Reduce Tucker ranks with a truncated HOSVD of each current core."""
+
+    modules = _tucker_modules(model)
+    if set(ranks) != set(modules):
+        raise ValueError("Progressive rank plan must name every Tucker module exactly")
+    max_absolute_error = 0.0
+    max_relative_error = 0.0
+    shrunk_modules = 0
+
+    for name, module in modules.items():
+        old_ranks: RankTuple = tuple(int(value) for value in module.ranks)
+        new_ranks: RankTuple = tuple(int(value) for value in ranks[name])  # type: ignore[assignment]
+        if len(new_ranks) != 4 or any(old < new for old, new in zip(old_ranks, new_ranks)):
+            raise ValueError(
+                f"Progressive ranks for {name!r} must shrink monotonically: "
+                f"{old_ranks} -> {new_ranks}"
+            )
+        if old_ranks == new_ranks:
+            continue
+        if any(
+            parameter.grad is not None
+            for parameter in (
+                module.core_matrix,
+                module.U1,
+                module.U2,
+                module.U3,
+                module.U4,
+            )
+        ):
+            raise RuntimeError("Tucker ranks may only change between optimizer steps")
+
+        with _exact_fp32_matmul():
+            before = (
+                module.materialize_weight(dtype=torch.float32)
+                if measure_error
+                else None
+            )
+        factors, core_matrix, bases = _truncated_hosvd(module, new_ranks)
+        for factor_name, new_factor, basis in zip(
+            ("U1", "U2", "U3", "U4"),
+            factors,
+            bases,
+        ):
+            old_factor = getattr(module, factor_name)
+            _project_factor_optimizer_state(optimizer, old_factor, basis)
+            _replace_parameter_(
+                module,
+                factor_name,
+                new_factor,
+                optimizer,
+            )
+
+        old_core = module.core_matrix
+        _project_core_optimizer_state(
+            optimizer,
+            old_core,
+            old_ranks,
+            new_ranks,
+            bases,
+        )
+        _replace_parameter_(
+            module,
+            "core_matrix",
+            core_matrix,
+            optimizer,
+        )
+        _update_module_metadata(module, new_ranks)
+        _refresh_optimizer_structure(optimizer, module)
+        shrunk_modules += 1
+
+        if before is not None:
+            with _exact_fp32_matmul():
+                after = module.materialize_weight(dtype=torch.float32)
+            delta = after - before
+            absolute = float(delta.abs().max().cpu())
+            relative = float(
+                (
+                    torch.linalg.vector_norm(delta)
+                    / torch.linalg.vector_norm(before).clamp_min(1e-12)
+                ).cpu()
+            )
+            max_absolute_error = max(max_absolute_error, absolute)
+            max_relative_error = max(max_relative_error, relative)
+
+    _update_model_metadata(model)
+    return {
+        "expanded_modules": 0,
+        "shrunk_modules": shrunk_modules,
+        "parameters": _model_parameter_count(model),
+        "max_absolute_function_error": max_absolute_error,
+        "max_relative_function_error": max_relative_error,
+        "direction": "shrink",
+    }
+
+
+def resize_tucker_model_to_plan_(
+    model: torch.nn.Module,
+    optimizer,
+    ranks: Mapping[str, Sequence[int]],
+    *,
+    seed: int,
+    verify_function: bool = True,
+    verify_rtol: float = 5e-5,
+) -> dict[str, float | int | str]:
+    modules = _tucker_modules(model)
+    if set(ranks) != set(modules):
+        raise ValueError("Progressive rank plan must name every Tucker module exactly")
+    comparisons = [
+        int(new) - int(old)
+        for name, module in modules.items()
+        for old, new in zip(module.ranks, ranks[name])
+    ]
+    if all(delta >= 0 for delta in comparisons):
+        return expand_tucker_model_to_plan_(
+            model,
+            optimizer,
+            ranks,
+            seed=seed,
+            verify_function=verify_function,
+            verify_rtol=verify_rtol,
+        )
+    if all(delta <= 0 for delta in comparisons):
+        return shrink_tucker_model_to_plan_(
+            model,
+            optimizer,
+            ranks,
+            measure_error=verify_function,
+        )
+    raise ValueError("A progressive transition cannot mix rank growth and shrinkage")
 
 
 def restore_progressive_tucker_shapes_(
@@ -569,7 +873,7 @@ def restore_progressive_tucker_shapes_(
         str(name): tuple(int(value) for value in values)
         for name, values in raw_ranks.items()
     }
-    expand_tucker_model_to_plan_(
+    resize_tucker_model_to_plan_(
         model,
         optimizer,
         ranks,
@@ -588,6 +892,7 @@ class ProgressiveTuckerController:
         optimizer,
         stage_values: Sequence[str],
         *,
+        final_ranks: str | None = None,
         warmup_steps: int = 400,
         seed: int = 1701,
         verify_rtol: float = 5e-5,
@@ -599,9 +904,12 @@ class ProgressiveTuckerController:
         self.warmup_steps = int(warmup_steps)
         self.seed = int(seed)
         self.verify_rtol = float(verify_rtol)
+        stage_specs = parse_progressive_stages(stage_values)
+        self.growing = stage_specs[-1][1] > stage_specs[0][1]
         self.stages = build_progressive_rank_stages(
             model,
-            parse_progressive_stages(stage_values),
+            stage_specs,
+            final_ranks=_parse_rank_tuple(final_ranks),
         )
         self.stage_index = 0
         self.current_step = 0
@@ -614,6 +922,7 @@ class ProgressiveTuckerController:
         current = self.stages[self.stage_index]
         self.model._progressive_tucker_state = {
             "version": 1,
+            "direction": "grow" if self.growing else "shrink",
             "stage_index": self.stage_index,
             "seed": self.seed,
             "warmup_steps": self.warmup_steps,
@@ -654,7 +963,11 @@ class ProgressiveTuckerController:
 
     def _install_growth_hooks(self) -> None:
         self._remove_hooks()
-        if self.previous_ranks is None or self._warmup_scale() >= 1.0:
+        if (
+            not self.growing
+            or self.previous_ranks is None
+            or self._warmup_scale() >= 1.0
+        ):
             return
         modules = _tucker_modules(self.model)
         for name, module in modules.items():
@@ -714,7 +1027,7 @@ class ProgressiveTuckerController:
         self._install_growth_hooks()
         self._record_state()
 
-    def maybe_grow(self, current_step: int) -> dict[str, float | int] | None:
+    def maybe_resize(self, current_step: int) -> dict[str, float | int | str] | None:
         self.current_step = int(current_step)
         if self._hook_handles and self._warmup_scale() >= 1.0:
             self._remove_hooks()
@@ -730,8 +1043,8 @@ class ProgressiveTuckerController:
             self.previous_ranks = {
                 name: tuple(ranks) for name, ranks in previous.ranks.items()
             }
-            self.last_growth_step = stage.step
-            result = expand_tucker_model_to_plan_(
+            self.last_growth_step = stage.step if self.growing else None
+            result = resize_tucker_model_to_plan_(
                 self.model,
                 self.optimizer,
                 stage.ranks,
@@ -744,12 +1057,15 @@ class ProgressiveTuckerController:
                     "stage_index": self.stage_index,
                     "target_parameters": stage.target_parameters,
                     "actual_parameters": stage.actual_parameters,
-                    "growth_step": stage.step,
+                    "transition_step": stage.step,
                 }
             )
             self._install_growth_hooks()
             self._record_state()
         return result
+
+    def maybe_grow(self, current_step: int) -> dict[str, float | int | str] | None:
+        return self.maybe_resize(current_step)
 
     def summary_lines(self) -> Iterable[str]:
         for index, stage in enumerate(self.stages):
@@ -766,5 +1082,7 @@ __all__ = [
     "build_progressive_rank_stages",
     "expand_tucker_model_to_plan_",
     "parse_progressive_stages",
+    "resize_tucker_model_to_plan_",
     "restore_progressive_tucker_shapes_",
+    "shrink_tucker_model_to_plan_",
 ]

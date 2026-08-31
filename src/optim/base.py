@@ -186,14 +186,18 @@ def train(
     if getattr(cfg, "tucker_progressive_stages", None):
         if isinstance(model, torch.nn.parallel.DistributedDataParallel):
             raise ValueError(
-                "Progressive Tucker rank growth changes parameter shapes and "
+                "Progressive Tucker rank changes alter parameter shapes and "
                 "therefore requires the single-process backend (omit "
                 "--distributed-backend and launch with python, not torchrun)."
             )
         if cfg.compile:
-            raise ValueError("Progressive Tucker rank growth is incompatible with --compile")
+            raise ValueError(
+                "Progressive Tucker rank changes are incompatible with --compile"
+            )
         if cfg.opt != "tensorion":
-            raise ValueError("Progressive Tucker rank growth currently requires --opt tensorion")
+            raise ValueError(
+                "Progressive Tucker rank changes currently require --opt tensorion"
+            )
         if getattr(cfg, "linear_parameterization", None) != "tucker":
             raise ValueError(
                 "--tucker-progressive-stages requires --linear-parameterization tucker"
@@ -205,6 +209,7 @@ def train(
             raw_progressive_model,
             opt,
             cfg.tucker_progressive_stages,
+            final_ranks=cfg.tucker_progressive_final_ranks,
             warmup_steps=cfg.tucker_progressive_warmup_steps,
             seed=cfg.tucker_progressive_seed,
             verify_rtol=cfg.tucker_progressive_verify_rtol,
@@ -387,28 +392,31 @@ def train(
 
     while curr_iter <= cfg.iterations:
         if progressive_controller is not None:
-            growth = progressive_controller.maybe_grow(curr_iter)
-            if growth is not None:
+            transition = progressive_controller.maybe_resize(curr_iter)
+            if transition is not None:
                 # Parameter-based FLOP estimates are cached by the model.
                 flops_per_token = raw_model.num_fwd_flops + raw_model.num_bck_flops
                 print(
-                    "Progressive Tucker growth: "
-                    f"stage={growth['stage_index']} iter={curr_iter} "
-                    f"parameters={growth['parameters']:,} "
-                    f"target={growth['target_parameters']:,} "
-                    f"relative_function_error="
-                    f"{growth['max_relative_function_error']:.3e}"
+                    "Progressive Tucker transition: "
+                    f"direction={transition['direction']} "
+                    f"stage={transition['stage_index']} iter={curr_iter} "
+                    f"parameters={transition['parameters']:,} "
+                    f"target={transition['target_parameters']:,} "
+                    f"relative_weight_error="
+                    f"{transition['max_relative_function_error']:.3e}"
                 )
                 if cfg.wandb and distributed_backend.is_master_process():
                     wandb.log(
                         {
                             "iter": curr_iter,
-                            "tucker/progressive_stage": growth["stage_index"],
-                            "tucker/progressive_parameters": growth["parameters"],
-                            "tucker/progressive_target_parameters": growth[
+                            "tucker/progressive_stage": transition["stage_index"],
+                            "tucker/progressive_parameters": transition[
+                                "parameters"
+                            ],
+                            "tucker/progressive_target_parameters": transition[
                                 "target_parameters"
                             ],
-                            "tucker/progressive_function_error": growth[
+                            "tucker/progressive_relative_weight_error": transition[
                                 "max_relative_function_error"
                             ],
                         }

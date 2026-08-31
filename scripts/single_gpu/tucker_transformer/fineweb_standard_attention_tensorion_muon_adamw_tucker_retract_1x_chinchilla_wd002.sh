@@ -54,6 +54,7 @@ LM_EVAL_ENABLED=${LM_EVAL_ENABLED:-1}
 LOG_INTERVAL=${LOG_INTERVAL:-50}
 SINGLE_PROCESS=${SINGLE_PROCESS:-0}
 TUCKER_PROGRESSIVE_STAGES=${TUCKER_PROGRESSIVE_STAGES:-""}
+TUCKER_PROGRESSIVE_FINAL_RANKS=${TUCKER_PROGRESSIVE_FINAL_RANKS:-""}
 TUCKER_PROGRESSIVE_WARMUP_STEPS=${TUCKER_PROGRESSIVE_WARMUP_STEPS:-400}
 TUCKER_PROGRESSIVE_SEED=${TUCKER_PROGRESSIVE_SEED:-1701}
 TUCKER_PROGRESSIVE_VERIFY_RTOL=${TUCKER_PROGRESSIVE_VERIFY_RTOL:-5e-5}
@@ -197,7 +198,14 @@ if [[ -n "${TUCKER_PROGRESSIVE_STAGES}" ]]; then
         --tucker-progressive-seed "${TUCKER_PROGRESSIVE_SEED}"
         --tucker-progressive-verify-rtol "${TUCKER_PROGRESSIVE_VERIFY_RTOL}"
     )
-    WANDB_TAGS+=(progressive-rank-growth function-preserving-growth)
+    if [[ -n "${TUCKER_PROGRESSIVE_FINAL_RANKS}" ]]; then
+        PROGRESSIVE_ARGS+=(
+            --tucker-progressive-final-ranks "${TUCKER_PROGRESSIVE_FINAL_RANKS}"
+        )
+        WANDB_TAGS+=(reverse-progressive-rank-shrink)
+    else
+        WANDB_TAGS+=(progressive-rank-growth function-preserving-growth)
+    fi
 fi
 if [[ "${SINGLE_PROCESS}" == "1" ]]; then
     TRAIN_COMMAND=(python "${TRAIN_ENTRY}")

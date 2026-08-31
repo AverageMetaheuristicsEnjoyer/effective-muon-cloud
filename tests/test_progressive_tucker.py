@@ -18,6 +18,7 @@ from optim.progressive_tucker import (
     ProgressiveTuckerController,
     expand_tucker_model_to_plan_,
     restore_progressive_tucker_shapes_,
+    shrink_tucker_model_to_plan_,
 )
 from optim.tensorion import TensorionOptimizer
 
@@ -171,6 +172,80 @@ def test_progressive_checkpoint_restores_shapes_before_state_load():
         restored.layer.materialize_weight(dtype=torch.float64),
         model.layer.materialize_weight(dtype=torch.float64),
     )
+    assert restored_optimizer.state[restored.layer.core_matrix][
+        "momentum_buffer"
+    ].shape == restored.layer.core_matrix.shape
+
+
+def test_rank_shrink_projects_weight_and_optimizer_state():
+    torch.manual_seed(17)
+    model = TinyTuckerModel(ranks=(4, 4, 4, 4))
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
+    _populate_sgd_momentum(model, optimizer)
+    model.layer.retract_()
+
+    metrics = shrink_tucker_model_to_plan_(
+        model,
+        optimizer,
+        {"layer": (2, 2, 2, 2)},
+    )
+
+    assert metrics["shrunk_modules"] == 1
+    assert metrics["direction"] == "shrink"
+    assert model.layer.ranks == (2, 2, 2, 2)
+    assert torch.isfinite(torch.tensor(metrics["max_relative_function_error"]))
+    for factor in (model.layer.U1, model.layer.U2, model.layer.U3, model.layer.U4):
+        assert optimizer.state[factor]["momentum_buffer"].shape == factor.shape
+        assert torch.allclose(
+            factor.mT @ factor,
+            torch.eye(2, dtype=factor.dtype),
+            atol=1e-6,
+            rtol=1e-6,
+        )
+    assert optimizer.state[model.layer.core_matrix][
+        "momentum_buffer"
+    ].shape == model.layer.core_matrix.shape
+
+
+def test_reverse_progressive_controller_uses_requested_final_ranks():
+    torch.manual_seed(23)
+    model = TinyTuckerModel(ranks=(4, 4, 4, 4))
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
+    full = sum(parameter.numel() for parameter in model.parameters())
+    low = full - model.layer.tucker_parameter_count + (
+        2 * 2 * 2 * 2 + sum(mode * 2 for mode in model.layer.modes)
+    )
+    controller = ProgressiveTuckerController(
+        model,
+        optimizer,
+        [f"0:{full}", f"1:{low}"],
+        final_ranks="2,2,2,2",
+        warmup_steps=0,
+    )
+
+    transition = controller.maybe_resize(1)
+
+    assert transition is not None
+    assert transition["direction"] == "shrink"
+    assert transition["actual_parameters"] == low
+    assert model.layer.ranks == (2, 2, 2, 2)
+
+    _populate_sgd_momentum(model, optimizer)
+    saved_model = model.state_dict()
+    saved_optimizer = optimizer.state_dict()
+    saved_progressive = dict(model._progressive_tucker_state)
+    restored = TinyTuckerModel(ranks=(4, 4, 4, 4))
+    restored_optimizer = torch.optim.SGD(
+        restored.parameters(), lr=1e-2, momentum=0.9
+    )
+    restore_progressive_tucker_shapes_(
+        restored,
+        restored_optimizer,
+        saved_progressive,
+    )
+    restored.load_state_dict(saved_model)
+    restored_optimizer.load_state_dict(saved_optimizer)
+    assert restored.layer.ranks == (2, 2, 2, 2)
     assert restored_optimizer.state[restored.layer.core_matrix][
         "momentum_buffer"
     ].shape == restored.layer.core_matrix.shape

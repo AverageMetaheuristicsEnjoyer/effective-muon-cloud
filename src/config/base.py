@@ -419,11 +419,18 @@ def parse_args(base_parser, args, namespace):
         default=None,
         metavar="STEP:PARAMETERS",
         help=(
-            "Enable single-process function-preserving Tucker rank growth. "
-            "Supply an increasing schedule such as 0:133000000 "
-            "4000:160000000 8000:190000000 12000:225000000 "
-            "16000:257676352. The initial model is built from the ordinary "
-            "Tucker rank flags and later ranks are chosen automatically."
+            "Enable single-process progressive Tucker rank changes. Targets "
+            "must be strictly increasing or decreasing. A decreasing schedule "
+            "also requires --tucker-progressive-final-ranks."
+        ),
+    )
+    parser.add_argument(
+        "--tucker-progressive-final-ranks",
+        default=None,
+        type=str,
+        help=(
+            "Final four mode ranks for a decreasing progressive schedule, "
+            "for example 22,27,22,27."
         ),
     )
     parser.add_argument(
