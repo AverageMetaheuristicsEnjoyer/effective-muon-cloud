@@ -20,6 +20,8 @@ esac
 gpu_uuid=$(nvidia-smi -i "$LOCAL_RANK" --query-gpu=uuid --format=csv,noheader)
 echo "MONARCH_TRAIN_PROCESS rank=$RANK world_size=$WORLD_SIZE local_rank=$LOCAL_RANK pid=$$ gpu_uuid=$gpu_uuid"
 
+acc_steps=$((16 / WORLD_SIZE))
+
 python src/main.py \
   --distributed-backend nccl \
   --experiment-name "benchmark_1b_${arm}_monarch_n${blocks}_${WORLD_SIZE}g" \
@@ -42,11 +44,11 @@ python src/main.py \
   --beta2 0.99 \
   --scheduler none \
   --warmup-steps 0 \
-  --iterations 12 \
-  --batch-size 16 \
-  --acc-steps 8 \
-  --eval-batch-size 16 \
-  --eval-interval 12 \
+  --iterations 20 \
+  --batch-size 8 \
+  --acc-steps "$acc_steps" \
+  --eval-batch-size 8 \
+  --eval-interval 20 \
   --eval-batches 1 \
   --log-interval 1 \
   --no-local-save
