@@ -319,9 +319,91 @@ def main():
         if gradient.shape != parameter.shape or not torch.isfinite(gradient).all():
             raise AssertionError(f"invalid post-growth gradient for {name}")
 
+    progressive_order3 = torch.nn.Module().cuda()
+    progressive_order3.layer = TuckerLinear(
+        1024,
+        1024,
+        rank=(8, 8, 112, 1),
+        bias=False,
+        equal_params=False,
+        forward_mode="chunked_contract",
+        contract_chunk_size=16384,
+        mode_layout="order3_input",
+        device="cuda",
+    ).train()
+    order3_factors = tuple(
+        getattr(progressive_order3.layer, name)
+        for name in progressive_order3.layer.active_factor_names
+    )
+    order3_optimizer = TensorionOptimizer(
+        tensorion_params=[
+            (
+                "layer.core_matrix",
+                progressive_order3.layer.core_matrix,
+                (112, 1, 8, 8),
+            )
+        ],
+        adamw_param_groups=[],
+        riemannian_muon_params=[
+            (f"layer.{name}", getattr(progressive_order3.layer, name))
+            for name in progressive_order3.layer.active_factor_names
+        ],
+        tucker_module_specs=[
+            (
+                "layer",
+                progressive_order3.layer.core_matrix,
+                order3_factors,
+            )
+        ],
+        tucker_lr_scaling_mode="none",
+        tucker_riemannian_muon_post_ns_project=False,
+        lr=1e-3,
+        momentum=0.95,
+        adjust_lr=True,
+        ns_steps=2,
+    )
+    order3_x = torch.randn(64, 1024, device="cuda", dtype=torch.bfloat16)
+    _run(
+        progressive_order3.layer,
+        order3_x,
+        lambda value, module, chunk: custom_tucker_linear(
+            value, module, chunk, cache_policy="recast"
+        ),
+    )
+    order3_optimizer.step()
+    progressive_order3.layer.retract_with_optimizer_state_(order3_optimizer)
+    order3_optimizer.zero_grad(set_to_none=True)
+    expand_tucker_model_to_plan_(
+        progressive_order3,
+        order3_optimizer,
+        {"layer": (8, 8, 120, 1)},
+        seed=2_001_704,
+        verify_function=True,
+        verify_rtol=5e-5,
+    )
+    if "U4" in dict(progressive_order3.layer.named_parameters()):
+        raise AssertionError("order-3 singleton became trainable after growth")
+    _, _, order3_grads = _run(
+        progressive_order3.layer,
+        order3_x,
+        lambda value, module, chunk: custom_tucker_linear(
+            value, module, chunk, cache_policy="recast"
+        ),
+    )
+    for name, parameter in progressive_order3.layer.named_parameters():
+        gradient = order3_grads[name]
+        if gradient.shape != parameter.shape or not torch.isfinite(gradient).all():
+            raise AssertionError(f"invalid order-3 post-growth gradient for {name}")
+    order3_optimizer.step()
+    result = progressive_order3.layer.retract_with_optimizer_state_(
+        order3_optimizer
+    )
+    if result != {"cores": 1, "factors": 3}:
+        raise AssertionError(result)
+
     print(
         "PASS all production shapes, non-contiguous multi-chunk, accumulation, "
-        "finite grads, cache invalidation, progressive growth"
+        "finite grads, cache invalidation, progressive growth, order-3 growth"
     )
 
 

@@ -69,45 +69,55 @@ class ProgressiveTuckerCudaRegression(unittest.TestCase):
             torch.backends.cuda.matmul.allow_tf32 = previous
 
     def test_order3_growth_keeps_singleton_buffer_and_optimizer_state(self):
-        torch.manual_seed(20260901)
-        model = TinyTuckerModel((2, 2, 3, 1), "order3_input")
-        optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
-        _populate_sgd_momentum(model, optimizer)
-        model.layer.retract_with_optimizer_state_(optimizer)
-        optimizer.zero_grad(set_to_none=True)
-
-        singleton = model.layer.U4
-        before = model.layer.materialize_weight(dtype=torch.float64)
-        metrics = expand_tucker_model_to_plan_(
-            model,
-            optimizer,
-            {"layer": (3, 3, 5, 1)},
-            seed=29,
-            verify_function=True,
-            verify_rtol=1e-10,
+        cases = (
+            ("order3_input", (2, 2, 3, 1), (3, 3, 5, 1), "U4"),
+            ("order3_output", (1, 3, 2, 2), (1, 5, 3, 3), "U1"),
         )
+        for layout, start_ranks, target_ranks, singleton_name in cases:
+            with self.subTest(layout=layout):
+                torch.manual_seed(20260901)
+                model = TinyTuckerModel(start_ranks, layout)
+                optimizer = torch.optim.SGD(
+                    model.parameters(), lr=1e-2, momentum=0.9
+                )
+                _populate_sgd_momentum(model, optimizer)
+                model.layer.retract_with_optimizer_state_(optimizer)
+                optimizer.zero_grad(set_to_none=True)
 
-        self.assertEqual(metrics["expanded_modules"], 1)
-        self.assertIs(model.layer.U4, singleton)
-        self.assertIn("U4", dict(model.layer.named_buffers()))
-        self.assertNotIn("U4", dict(model.layer.named_parameters()))
-        self.assertEqual(model.layer.ranks, (3, 3, 5, 1))
-        torch.testing.assert_close(
-            model.layer.materialize_weight(dtype=torch.float64),
-            before,
-            rtol=1e-12,
-            atol=1e-12,
-        )
-        for name in model.layer.active_factor_names:
-            factor = getattr(model.layer, name)
-            self.assertEqual(
-                optimizer.state[factor]["momentum_buffer"].shape,
-                factor.shape,
-            )
+                singleton = getattr(model.layer, singleton_name)
+                before = model.layer.materialize_weight(dtype=torch.float64)
+                metrics = expand_tucker_model_to_plan_(
+                    model,
+                    optimizer,
+                    {"layer": target_ranks},
+                    seed=29,
+                    verify_function=True,
+                    verify_rtol=1e-10,
+                )
 
-        _populate_sgd_momentum(model, optimizer)
-        result = model.layer.retract_with_optimizer_state_(optimizer)
-        self.assertEqual(result, {"cores": 1, "factors": 3})
+                self.assertEqual(metrics["expanded_modules"], 1)
+                self.assertIs(getattr(model.layer, singleton_name), singleton)
+                self.assertIn(singleton_name, dict(model.layer.named_buffers()))
+                self.assertNotIn(
+                    singleton_name, dict(model.layer.named_parameters())
+                )
+                self.assertEqual(model.layer.ranks, target_ranks)
+                torch.testing.assert_close(
+                    model.layer.materialize_weight(dtype=torch.float64),
+                    before,
+                    rtol=1e-12,
+                    atol=1e-12,
+                )
+                for name in model.layer.active_factor_names:
+                    factor = getattr(model.layer, name)
+                    self.assertEqual(
+                        optimizer.state[factor]["momentum_buffer"].shape,
+                        factor.shape,
+                    )
+
+                _populate_sgd_momentum(model, optimizer)
+                result = model.layer.retract_with_optimizer_state_(optimizer)
+                self.assertEqual(result, {"cores": 1, "factors": 3})
 
 
 def _populate_sgd_momentum(model, optimizer):
