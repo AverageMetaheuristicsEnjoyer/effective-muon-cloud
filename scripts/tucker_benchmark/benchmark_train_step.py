@@ -38,6 +38,7 @@ from scripts.tucker_benchmark.common import (  # noqa: E402
     DEFAULT_SEQUENCE_LENGTH,
     FAST_ISO_FFN_WIDTHS,
     MODEL_SPECS,
+    TUCKER_MODE_LAYOUTS,
     TUCKER_RANK_MULTIPLE,
     VARIANTS,
     _aligned_factor_pair,
@@ -58,7 +59,7 @@ def make_config(args) -> SimpleNamespace:
     is_tucker = args.variant in TUCKER_VARIANTS
     if is_tucker:
         geometry, rank_plan, tucker_parameters, _ = tucker_benchmark_plan(
-            args.model_size, args.tucker_rank_profile
+            args.model_size, args.tucker_rank_profile, args.tucker_mode_layout
         )
     else:
         geometry = model_geometry(args.model_size)
@@ -89,9 +90,11 @@ def make_config(args) -> SimpleNamespace:
         tucker_gate_up_ranks=None,
         tucker_down_ranks=None,
         tucker_rank_plan=rank_plan,
+        tucker_mode_layout=args.tucker_mode_layout,
         tucker_mode_multiple=(
             1
-            if args.tucker_rank_profile != "iso"
+            if args.tucker_mode_layout != "balanced4"
+            or args.tucker_rank_profile != "iso"
             or args.model_size in FAST_ISO_FFN_WIDTHS
             else TUCKER_RANK_MULTIPLE
         ),
@@ -493,6 +496,9 @@ def run(args) -> dict:
             "tucker_rank_profile": (
                 args.tucker_rank_profile if args.variant in TUCKER_VARIANTS else None
             ),
+            "tucker_mode_layout": (
+                args.tucker_mode_layout if args.variant in TUCKER_VARIANTS else None
+            ),
             "dense_lm_head": isinstance(model.lm_head, torch.nn.Linear),
             "tucker_forward_modes": (
                 dict(tucker_stats.forward_modes) if tucker_stats is not None else None
@@ -548,6 +554,9 @@ def parse_args():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--model-size", required=True, choices=[item["name"] for item in MODEL_SPECS])
     parser.add_argument("--tucker-rank-profile", default="iso")
+    parser.add_argument(
+        "--tucker-mode-layout", choices=TUCKER_MODE_LAYOUTS, default="balanced4"
+    )
     parser.add_argument("--exclusive-gpu", action="store_true")
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument("--microbatch", type=int, default=1)

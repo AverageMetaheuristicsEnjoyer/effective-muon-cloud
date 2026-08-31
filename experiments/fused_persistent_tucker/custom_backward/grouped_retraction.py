@@ -47,7 +47,11 @@ def grouped_retract_tucker_modules_(
                 for module in same_rank_modules
             ]
         )
-        for mode, factor_name in enumerate(("U1", "U2", "U3", "U4")):
+        for mode, factor_name in (
+            (index, name)
+            for index, name in enumerate(("U1", "U2", "U3", "U4"))
+            if name in same_rank_modules[0].active_factor_names
+        ):
             parameters = [getattr(module, factor_name) for module in same_rank_modules]
             factor_batch = torch.stack(parameters)
             q_batch, r_batch = torch.linalg.qr(factor_batch, mode="reduced")
@@ -74,7 +78,7 @@ def grouped_retract_tucker_modules_(
 
     result = {
         "modules": len(modules),
-        "factors": 4 * len(modules),
+        "factors": sum(len(module.active_factor_names) for module in modules),
         "transported_cores": 0,
         "transported_factors": 0,
     }

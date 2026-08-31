@@ -143,6 +143,54 @@ class TuckerLinearTest(unittest.TestCase):
             atol=1e-10,
         )
 
+    def test_order3_layouts_have_three_trainable_factors(self):
+        cases = (
+            ("order3_input", (2, 3, 4, 1), "U4"),
+            ("order3_output", (1, 4, 2, 3), "U1"),
+        )
+        for layout, ranks, inactive_name in cases:
+            with self.subTest(layout=layout):
+                torch.manual_seed(18)
+                module = TuckerLinear(
+                    12,
+                    18,
+                    rank=ranks,
+                    bias=False,
+                    equal_params=False,
+                    forward_mode="chunked_contract",
+                    contract_chunk_size=32,
+                    mode_layout=layout,
+                    dtype=torch.float64,
+                )
+                factor_parameters = {
+                    name for name, _ in module.named_parameters() if name.startswith("U")
+                }
+                self.assertEqual(factor_parameters, set(module.active_factor_names))
+                self.assertIn(inactive_name, dict(module.named_buffers()))
+                self.assertEqual(getattr(module, inactive_name).item(), 1.0)
+                self.assertEqual(
+                    sum(parameter.numel() for parameter in module.parameters()),
+                    module.tucker_parameter_count,
+                )
+
+                x = torch.randn(2, 5, 12, dtype=torch.float64, requires_grad=True)
+                output = module(x)
+                torch.testing.assert_close(
+                    output,
+                    F.linear(x, module.materialize_weight(dtype=torch.float64)),
+                    rtol=1e-10,
+                    atol=1e-10,
+                )
+                output.square().mean().backward()
+                self.assertIsNotNone(module.core_matrix.grad)
+                self.assertTrue(
+                    all(
+                        getattr(module, name).grad is not None
+                        for name in module.active_factor_names
+                    )
+                )
+                self.assertIsNone(getattr(module, inactive_name).grad)
+
     def test_materialized_weight_has_dense_shape(self):
         for in_features, out_features in (
             (12, 18),

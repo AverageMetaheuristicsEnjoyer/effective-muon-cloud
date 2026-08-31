@@ -286,6 +286,7 @@ class TuckerLinear(nn.Module):
         forward_mode: str = "auto",
         expected_tokens_per_forward: int = 1,
         contract_chunk_size: int = 64,
+        mode_layout: str = "balanced4",
         extra_parameters: int = 0,
         device=None,
         dtype=None,
@@ -295,8 +296,24 @@ class TuckerLinear(nn.Module):
             raise ValueError("in_features and out_features must be positive")
         self.in_features = int(in_features)
         self.out_features = int(out_features)
-        self.in_modes = balanced_factor_pair(self.in_features)
-        self.out_modes = balanced_factor_pair(self.out_features)
+        if mode_layout == "balanced4":
+            self.in_modes = balanced_factor_pair(self.in_features)
+            self.out_modes = balanced_factor_pair(self.out_features)
+            inactive_factor = None
+        elif mode_layout == "order3_input":
+            self.in_modes = balanced_factor_pair(self.in_features)
+            self.out_modes = (self.out_features, 1)
+            inactive_factor = "U4"
+        elif mode_layout == "order3_output":
+            self.in_modes = (1, self.in_features)
+            self.out_modes = balanced_factor_pair(self.out_features)
+            inactive_factor = "U1"
+        else:
+            raise ValueError(f"unknown Tucker mode layout {mode_layout!r}")
+        self.mode_layout = mode_layout
+        self.active_factor_names = tuple(
+            name for name in ("U1", "U2", "U3", "U4") if name != inactive_factor
+        )
         self.modes = (*self.in_modes, *self.out_modes)
         self.equal_params = bool(equal_params)
         self.init_std = float(init_std)
@@ -322,6 +339,8 @@ class TuckerLinear(nn.Module):
         self.contract_chunk_size = int(contract_chunk_size)
 
         if rank == "auto":
+            if self.mode_layout != "balanced4":
+                raise ValueError("order-3 Tucker layouts require explicit mode ranks")
             ranks = auto_tucker_ranks(self.in_features, self.out_features)
             self.rank_policy = "auto"
         elif isinstance(rank, int):
@@ -346,7 +365,9 @@ class TuckerLinear(nn.Module):
         m1, m2 = self.out_modes
         factory_kwargs = {"device": device, "dtype": dtype}
 
-        self.tucker_parameter_count = _parameter_count(self.modes, self.ranks)
+        self.tucker_parameter_count = _parameter_count(self.modes, self.ranks) - int(
+            inactive_factor is not None
+        )
         self.dense_parameter_count = self.in_features * self.out_features
         if self.equal_params and self.tucker_parameter_count > self.dense_parameter_count:
             raise ValueError(
@@ -403,10 +424,17 @@ class TuckerLinear(nn.Module):
 
         # Allocate only after all rank/budget checks so a bad manual rank
         # cannot OOM before producing its intended validation error.
-        self.U1 = nn.Parameter(torch.empty(n1, r1, **factory_kwargs))
-        self.U2 = nn.Parameter(torch.empty(n2, r2, **factory_kwargs))
-        self.U3 = nn.Parameter(torch.empty(m1, r3, **factory_kwargs))
-        self.U4 = nn.Parameter(torch.empty(m2, r4, **factory_kwargs))
+        for name, rows, rank_value in (
+            ("U1", n1, r1),
+            ("U2", n2, r2),
+            ("U3", m1, r3),
+            ("U4", m2, r4),
+        ):
+            value = torch.empty(rows, rank_value, **factory_kwargs)
+            if name == inactive_factor:
+                self.register_buffer(name, value)
+            else:
+                setattr(self, name, nn.Parameter(value))
         # Keeping the core two-dimensional makes its Muon role unambiguous.
         self.core_matrix = nn.Parameter(
             torch.empty(r3 * r4, r1 * r2, **factory_kwargs)
@@ -472,8 +500,12 @@ class TuckerLinear(nn.Module):
 
     def reset_parameters(self, *, init_std: float | None = None) -> None:
         target_std = self.init_std if init_std is None else float(init_std)
-        for factor in (self.U1, self.U2, self.U3, self.U4):
-            nn.init.orthogonal_(factor)
+        for name in ("U1", "U2", "U3", "U4"):
+            factor = getattr(self, name)
+            if name in self.active_factor_names:
+                nn.init.orthogonal_(factor)
+            else:
+                factor.fill_(1.0)
         core_elements = math.prod(self.ranks)
         core_std = target_std * math.sqrt(
             self.in_features * self.out_features / core_elements
@@ -742,7 +774,7 @@ class TuckerLinear(nn.Module):
     def extra_repr(self) -> str:
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
-            f"modes={self.modes}, ranks={self.ranks}, "
+            f"modes={self.modes}, ranks={self.ranks}, layout={self.mode_layout!r}, "
             f"equal_params={self.equal_params}, "
             f"extra_parameters={self.extra_parameters}, "
             f"forward_mode={self.resolved_forward_mode!r}, "
@@ -911,6 +943,7 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
     }
     equal_params = bool(getattr(config, "tucker_equal_params", True))
     forward_mode = getattr(config, "tucker_forward_mode", "auto")
+    mode_layout = getattr(config, "tucker_mode_layout", "balanced4")
     expected_tokens_per_forward = (
         int(getattr(config, "batch_size", 1)) * int(config.sequence_length)
     )
@@ -1009,6 +1042,7 @@ def replace_all_linears_with_tucker(model: nn.Module, config) -> TuckerReplaceme
                         if full_name == "lm_head"
                         else getattr(config, "tucker_contract_chunk_size", 1024)
                     ),
+                    mode_layout=mode_layout,
                     extra_parameters=target_extras[full_name],
                     device=child.weight.device,
                     dtype=child.weight.dtype,

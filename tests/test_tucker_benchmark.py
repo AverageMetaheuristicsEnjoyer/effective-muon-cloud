@@ -34,6 +34,7 @@ class TuckerBenchmarkTest(unittest.TestCase):
             exclusive_gpu=True,
             model_size="257m",
             tucker_rank_profile="iso",
+            tucker_mode_layout="balanced4",
             tucker_cache_policy="recast",
             tucker_muon_core_microbatch=1,
             tucker_muon_streams=2,
@@ -112,6 +113,28 @@ class TuckerBenchmarkTest(unittest.TestCase):
                 ]
                 self.assertLess(relative_error, 3e-4)
 
+    def test_order3_rank8_profiles_match_stage_budgets(self):
+        targets = {"133m": 133_000_000, "225m": 225_000_000}
+        for layout, singleton_index in (("order3_input", 3), ("order3_output", 0)):
+            for stage, target in targets.items():
+                with self.subTest(layout=layout, stage=stage):
+                    _, plan, parameters, profile = tucker_benchmark_plan(
+                        "257m", f"progressive_{stage}_rank8", layout
+                    )
+                    self.assertEqual(profile["mode_layout"], layout)
+                    self.assertTrue(
+                        all(ranks[singleton_index] == 1 for ranks in plan.values())
+                    )
+                    self.assertTrue(
+                        all(
+                            rank % 8 == 0
+                            for ranks in plan.values()
+                            for index, rank in enumerate(ranks)
+                            if index != singleton_index
+                        )
+                    )
+                    self.assertLess(abs(parameters - target) / target, 3e-4)
+
     @unittest.skipUnless(find_spec("torch"), "PyTorch is not installed")
     def test_257m_rank8_plan_matches_constructed_model(self):
         import torch
@@ -132,11 +155,42 @@ class TuckerBenchmarkTest(unittest.TestCase):
             257_155_584,
         )
         self.assertEqual(config.ffn_hidden_size, 3072)
-        modules = [module for module in model.modules() if isinstance(module, TuckerLinear)]
+        modules = [
+            module for module in model.modules() if isinstance(module, TuckerLinear)
+        ]
         self.assertEqual(len(modules), 84)
         self.assertIsInstance(model.lm_head, torch.nn.Linear)
         self.assertTrue(all(rank % 8 == 0 for module in modules for rank in module.ranks))
         self.assertTrue(all(max(module.modes) <= 64 for module in modules))
+
+    @unittest.skipUnless(find_spec("torch"), "PyTorch is not installed")
+    def test_order3_plan_matches_constructed_model(self):
+        import torch
+
+        from models.tucker_linear import TuckerLinear
+        from scripts.tucker_benchmark.benchmark_train_step import (
+            instantiate_model,
+            make_config,
+        )
+
+        args = self.args()
+        args.variant = "tucker_reference"
+        args.tucker_rank_profile = "progressive_133m_rank8"
+        args.tucker_mode_layout = "order3_input"
+        config = make_config(args)
+        model = instantiate_model(config, torch.device("meta"))
+        modules = [module for module in model.modules() if isinstance(module, TuckerLinear)]
+
+        self.assertEqual(
+            sum(parameter.numel() for parameter in model.parameters()),
+            config.target_parameter_count,
+        )
+        self.assertEqual(len(modules), 84)
+        self.assertTrue(
+            all(module.mode_layout == "order3_input" for module in modules)
+        )
+        self.assertTrue(all(len(module.active_factor_names) == 3 for module in modules))
+        self.assertTrue(all(module.ranks[3] == 1 for module in modules))
 
 
 if __name__ == "__main__":

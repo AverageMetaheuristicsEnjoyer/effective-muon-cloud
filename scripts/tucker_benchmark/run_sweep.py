@@ -16,6 +16,7 @@ from scripts.tucker_benchmark.common import (
     MICROBATCHES,
     MODEL_SPECS,
     PROGRESSIVE_RANK_PROFILES,
+    TUCKER_MODE_LAYOUTS,
     VARIANTS,
     accumulation_steps,
     atomic_write_json,
@@ -63,15 +64,27 @@ def selected_rank_profiles(names: str | None) -> list[str]:
     return selected
 
 
+def selected_mode_layouts(names: str | None) -> list[str]:
+    if not names:
+        return ["balanced4"]
+    selected = [name.strip() for name in names.split(",") if name.strip()]
+    unknown = [name for name in selected if name not in TUCKER_MODE_LAYOUTS]
+    if unknown:
+        raise ValueError(f"unknown Tucker mode layouts: {unknown}")
+    return selected
+
+
 def result_path(
     output_dir: Path,
     model: str,
     variant: str,
     microbatch: int,
     rank_profile: str,
+    mode_layout: str,
 ) -> Path:
     profile = "" if rank_profile == "iso" else f"-{rank_profile}"
-    return output_dir / "runs" / f"{model}{profile}-{variant}-bs{microbatch}.json"
+    layout = "" if mode_layout == "balanced4" else f"-{mode_layout}"
+    return output_dir / "runs" / f"{model}{profile}{layout}-{variant}-bs{microbatch}.json"
 
 
 def run_point(
@@ -80,9 +93,11 @@ def run_point(
     variant: dict,
     microbatch: int,
     rank_profile: str,
+    mode_layout: str,
 ) -> dict:
     args.variant = variant["name"]
     args.tucker_rank_profile = rank_profile
+    args.tucker_mode_layout = mode_layout
     accumulation = accumulation_steps(
         args.tokens_per_step, microbatch, args.sequence_length
     )
@@ -93,6 +108,7 @@ def run_point(
         variant["name"],
         microbatch,
         rank_profile,
+        mode_layout,
     )
     if output.is_file() and not args.rerun:
         payload = json.loads(output.read_text())
@@ -110,6 +126,8 @@ def run_point(
         model["name"],
         "--tucker-rank-profile",
         rank_profile,
+        "--tucker-mode-layout",
+        mode_layout,
         "--exclusive-gpu",
         "--sequence-length",
         str(args.sequence_length),
@@ -150,7 +168,8 @@ def run_point(
     environment["PYTHONUNBUFFERED"] = "1"
     log(
         f"Running {model['label']} / {variant['label']} / "
-        f"rank profile {rank_profile} / microbatch {microbatch} x {accumulation}"
+        f"rank profile {rank_profile} / layout {mode_layout} / "
+        f"microbatch {microbatch} x {accumulation}"
     )
     completed = subprocess.run(
         command, cwd=ROOT, env=environment, check=False
@@ -185,6 +204,7 @@ def parse_args():
     parser.add_argument("--models", default=None)
     parser.add_argument("--variants", default=None)
     parser.add_argument("--rank-profiles", default=None)
+    parser.add_argument("--mode-layouts", default=None)
     parser.add_argument("--microbatches", default=None)
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument("--tokens-per-step", type=int, default=DEFAULT_TOKENS_PER_STEP)
@@ -215,10 +235,15 @@ def main():
     models = selected_models(args.models)
     variants = selected_variants(args.variants)
     rank_profiles = selected_rank_profiles(args.rank_profiles)
+    mode_layouts = selected_mode_layouts(args.mode_layouts)
     if rank_profiles != ["iso"] and any(
         not variant["name"].startswith("tucker_") for variant in variants
     ):
         raise ValueError("progressive rank profiles can only be used with Tucker variants")
+    if mode_layouts != ["balanced4"] and any(
+        not variant["name"].startswith("tucker_") for variant in variants
+    ):
+        raise ValueError("order-3 mode layouts can only be used with Tucker variants")
     microbatches = (
         [int(value) for value in args.microbatches.split(",")]
         if args.microbatches
@@ -234,28 +259,40 @@ def main():
     for model in models:
         args.model_size = model["name"]
         for microbatch in sorted(microbatches):
-            for rank_profile in rank_profiles:
-                for variant in variants:
-                    key = (model["name"], rank_profile, variant["name"])
-                    if key in exhausted:
-                        continue
-                    payload = run_point(
-                        args, model, variant, microbatch, rank_profile
-                    )
-                    results.append(payload)
-                    if payload.get("status") == "oom":
-                        exhausted.add(key)
-                    atomic_write_json(
-                        args.output_dir / "results.json",
-                        {
-                            "status": "running",
-                            "models": [item["name"] for item in models],
-                            "variants": [item["name"] for item in variants],
-                            "rank_profiles": rank_profiles,
-                            "microbatches": sorted(microbatches),
-                            "results": results,
-                        },
-                    )
+            for mode_layout in mode_layouts:
+                for rank_profile in rank_profiles:
+                    for variant in variants:
+                        key = (
+                            model["name"],
+                            rank_profile,
+                            mode_layout,
+                            variant["name"],
+                        )
+                        if key in exhausted:
+                            continue
+                        payload = run_point(
+                            args,
+                            model,
+                            variant,
+                            microbatch,
+                            rank_profile,
+                            mode_layout,
+                        )
+                        results.append(payload)
+                        if payload.get("status") == "oom":
+                            exhausted.add(key)
+                        atomic_write_json(
+                            args.output_dir / "results.json",
+                            {
+                                "status": "running",
+                                "models": [item["name"] for item in models],
+                                "variants": [item["name"] for item in variants],
+                                "rank_profiles": rank_profiles,
+                                "mode_layouts": mode_layouts,
+                                "microbatches": sorted(microbatches),
+                                "results": results,
+                            },
+                        )
 
     atomic_write_json(
         args.output_dir / "results.json",
@@ -264,6 +301,7 @@ def main():
             "models": [item["name"] for item in models],
             "variants": [item["name"] for item in variants],
             "rank_profiles": rank_profiles,
+            "mode_layouts": mode_layouts,
             "microbatches": sorted(microbatches),
             "results": results,
         },

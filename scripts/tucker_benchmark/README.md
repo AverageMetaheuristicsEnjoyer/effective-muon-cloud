@@ -51,3 +51,16 @@ The `progressive-ranks` Cloud command benchmarks the four lower 257M
 progressive stages (133M, 160M, 190M, and 225M) both with their exact rank
 plans and with parameter-matched rank-8 plans. It runs the reference and new
 parallel Tucker paths at microbatches 1/2/4/8/16.
+
+The `order3-screen` command compares the current order-4 layout with two
+order-3 layouts at matched 133M and 225M model budgets. `order3_input` splits
+the input dimension and leaves the output dimension intact; `order3_output`
+does the reverse. The implementation keeps the existing four-mode kernels by
+using one fixed singleton buffer, so each order-3 layer has exactly three
+trainable factor matrices. The screen uses microbatches 1 and 16.
+
+```bash
+mlsub run --repo <public-mirror> --branch <branch> \
+  --entry scripts/tucker_benchmark/cloud_run.sh --image torch28 --no-pip \
+  --gpus 1 --args order3-screen
+```

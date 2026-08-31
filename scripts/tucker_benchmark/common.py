@@ -21,9 +21,10 @@ VARIANTS = (
 MICROBATCHES = (1, 2, 4, 8, 16)
 DEFAULT_SEQUENCE_LENGTH = 1024
 DEFAULT_TOKENS_PER_STEP = 16_384
-HARNESS_REVISION = 5
+HARNESS_REVISION = 6
 TUCKER_RANK_MULTIPLE = 8
 FAST_ISO_FFN_WIDTHS = {"257m": 3072}
+TUCKER_MODE_LAYOUTS = ("balanced4", "order3_input", "order3_output")
 
 PROGRESSIVE_257M_STAGES = (
     {
@@ -111,8 +112,27 @@ def _aligned_factor_pair(value: int, multiple: int) -> tuple[int, int]:
 def _tucker_parameter_count(
     modes: tuple[int, int, int, int],
     ranks: tuple[int, int, int, int],
+    mode_layout: str = "balanced4",
 ) -> int:
-    return sum(mode * rank for mode, rank in zip(modes, ranks)) + math.prod(ranks)
+    return (
+        sum(mode * rank for mode, rank in zip(modes, ranks))
+        + math.prod(ranks)
+        - int(mode_layout != "balanced4")
+    )
+
+
+def _tucker_modes(
+    in_features: int,
+    out_features: int,
+    mode_layout: str,
+) -> tuple[int, int, int, int]:
+    if mode_layout == "balanced4":
+        return (*_factor_pair(in_features), *_factor_pair(out_features))
+    if mode_layout == "order3_input":
+        return (*_factor_pair(in_features), out_features, 1)
+    if mode_layout == "order3_output":
+        return (1, in_features, *_factor_pair(out_features))
+    raise ValueError(f"unknown Tucker mode layout {mode_layout!r}")
 
 
 def _tucker_module_shapes(geometry: dict) -> list[tuple[str, int, int]]:
@@ -257,16 +277,22 @@ def _exact_progressive_plan(stage: dict) -> tuple[dict, int]:
 
 
 @lru_cache(maxsize=None)
-def _rank8_progressive_plan(target_parameters: int) -> tuple[dict, int]:
+def _rank8_progressive_plan(
+    target_parameters: int,
+    mode_layout: str = "balanced4",
+) -> tuple[dict, int]:
     geometry = model_geometry("257m")
     modules = _tucker_module_shapes(geometry)
     modes = {
-        name: (*_factor_pair(in_features), *_factor_pair(out_features))
+        name: _tucker_modes(in_features, out_features, mode_layout)
         for name, in_features, out_features in modules
     }
-    plan = {name: (8, 8, 8, 8) for name, _, _ in modules}
+    plan = {
+        name: tuple(min(TUCKER_RANK_MULTIPLE, mode) for mode in modes[name])
+        for name, _, _ in modules
+    }
     counts = {
-        name: _tucker_parameter_count(modes[name], plan[name])
+        name: _tucker_parameter_count(modes[name], plan[name], mode_layout)
         for name in plan
     }
     parameters = _fixed_parameter_count(geometry) + sum(counts.values())
@@ -282,7 +308,9 @@ def _rank8_progressive_plan(target_parameters: int) -> tuple[dict, int]:
                 updated = list(ranks)
                 updated[rank_index] += TUCKER_RANK_MULTIPLE
                 updated = tuple(updated)
-                updated_count = _tucker_parameter_count(module_modes, updated)
+                updated_count = _tucker_parameter_count(
+                    module_modes, updated, mode_layout
+                )
                 increase = updated_count - counts[module_name]
                 if parameters + increase <= target_parameters:
                     candidates.append(
@@ -317,7 +345,9 @@ def _rank8_progressive_plan(target_parameters: int) -> tuple[dict, int]:
                 updated = list(ranks)
                 updated[rank_index] += TUCKER_RANK_MULTIPLE
                 updated = tuple(updated)
-                updated_count = _tucker_parameter_count(module_modes, updated)
+                updated_count = _tucker_parameter_count(
+                    module_modes, updated, mode_layout
+                )
                 increase = updated_count - counts[module_name]
                 increments.append((module_name, updated, updated_count, increase))
                 difference = abs(parameters + increase - target_parameters)
@@ -328,7 +358,9 @@ def _rank8_progressive_plan(target_parameters: int) -> tuple[dict, int]:
                 updated = list(ranks)
                 updated[rank_index] -= TUCKER_RANK_MULTIPLE
                 updated = tuple(updated)
-                updated_count = _tucker_parameter_count(module_modes, updated)
+                updated_count = _tucker_parameter_count(
+                    module_modes, updated, mode_layout
+                )
                 decrease = counts[module_name] - updated_count
                 decrements.append((module_name, updated, updated_count, decrease))
 
@@ -378,26 +410,37 @@ def _rank8_progressive_plan(target_parameters: int) -> tuple[dict, int]:
 def tucker_benchmark_plan(
     model_name: str,
     rank_profile: str = "iso",
+    mode_layout: str = "balanced4",
 ) -> tuple[dict, dict[str, tuple[int, int, int, int]], int, dict]:
+    if mode_layout not in TUCKER_MODE_LAYOUTS:
+        raise ValueError(f"unknown Tucker mode layout {mode_layout!r}")
     if rank_profile == "iso":
+        if mode_layout != "balanced4":
+            raise ValueError("order-3 layouts require a progressive rank profile")
         geometry = tucker_model_geometry(model_name)
         plan, parameters = tucker_rank_plan(model_name)
         return geometry, plan, parameters, {
             "name": rank_profile,
             "alignment": "rank8",
             "target_parameters": model_geometry(model_name)["dense_parameters"],
+            "mode_layout": mode_layout,
         }
     if model_name != "257m":
         raise ValueError("progressive rank profiles are only defined for 257m")
     stage, alignment = _progressive_stage(rank_profile)
     if alignment == "exact":
+        if mode_layout != "balanced4":
+            raise ValueError("exact order-4 rank profiles cannot be used for order-3")
         plan, parameters = _exact_progressive_plan(stage)
     else:
-        plan, parameters = _rank8_progressive_plan(stage["target_parameters"])
+        plan, parameters = _rank8_progressive_plan(
+            stage["target_parameters"], mode_layout
+        )
     return model_geometry(model_name), plan, parameters, {
         "name": rank_profile,
         "alignment": alignment,
         "target_parameters": stage["target_parameters"],
+        "mode_layout": mode_layout,
     }
 
 
@@ -420,8 +463,9 @@ def accumulation_steps(tokens_per_step: int, microbatch: int, sequence_length: i
 
 def requested_controls(args, microbatch: int, accumulation: int) -> dict:
     rank_profile = getattr(args, "tucker_rank_profile", "iso")
+    mode_layout = getattr(args, "tucker_mode_layout", "balanced4")
     _, _, tucker_parameters, profile = tucker_benchmark_plan(
-        args.model_size, rank_profile
+        args.model_size, rank_profile, mode_layout
     )
     return {
         "harness_revision": HARNESS_REVISION,
@@ -444,6 +488,7 @@ def requested_controls(args, microbatch: int, accumulation: int) -> dict:
         "exclusive_gpu": args.exclusive_gpu,
         "model_size": args.model_size,
         "tucker_rank_profile": rank_profile,
+        "tucker_mode_layout": mode_layout,
         "tucker_rank_alignment": profile["alignment"],
         "tucker_rank_target_parameters": profile["target_parameters"],
         "tucker_rank_multiple": (
@@ -451,7 +496,9 @@ def requested_controls(args, microbatch: int, accumulation: int) -> dict:
         ),
         "tucker_mode_multiple": (
             1
-            if rank_profile != "iso" or args.model_size in FAST_ISO_FFN_WIDTHS
+            if mode_layout != "balanced4"
+            or rank_profile != "iso"
+            or args.model_size in FAST_ISO_FFN_WIDTHS
             else TUCKER_RANK_MULTIPLE
         ),
         "tucker_parameters": tucker_parameters,

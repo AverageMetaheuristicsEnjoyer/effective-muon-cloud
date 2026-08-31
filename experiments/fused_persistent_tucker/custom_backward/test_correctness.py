@@ -113,6 +113,36 @@ def main():
                 3e-2,
             )
 
+    for layout, ranks in (
+        ("order3_input", (16, 16, 64, 1)),
+        ("order3_output", (1, 64, 16, 16)),
+    ):
+        production = TuckerLinear(
+            1024,
+            1024,
+            rank=ranks,
+            bias=False,
+            equal_params=False,
+            forward_mode="chunked_contract",
+            contract_chunk_size=16384,
+            mode_layout=layout,
+            device="cuda",
+        ).train()
+        production_reference = copy.deepcopy(production)
+        production_custom = copy.deepcopy(production)
+        production_x = torch.randn(64, 1024, device="cuda", dtype=torch.bfloat16)
+        ref_y, ref_loss, ref_grads = _run(
+            production_reference, production_x, reference_linear
+        )
+        implementation = lambda value, module, chunk: custom_tucker_linear(
+            value, module, chunk, cache_policy="recast"
+        )
+        y, loss, grads = _run(production_custom, production_x, implementation)
+        _assert_close(f"{layout}.forward", y, ref_y, 0.0, 0.0)
+        _assert_close(f"{layout}.loss", loss, ref_loss, 1e-6, 1e-6)
+        for name, expected in ref_grads.items():
+            _assert_close(f"{layout}.{name}", grads[name], expected, 4e-2, 4e-2)
+
     # The cross-scale benchmark uses rank-8-aligned factor pairs.  For 2816
     # features that is 32x88, which deliberately exercises the generic path.
     original_factor_pair = tucker_linear_module.balanced_factor_pair

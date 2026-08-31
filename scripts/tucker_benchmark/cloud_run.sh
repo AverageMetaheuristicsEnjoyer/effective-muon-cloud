@@ -2,7 +2,7 @@
 # Cloud.ru mlsub entry point. It keeps logs and results on the persistent nfs3 volume.
 set -u
 
-RESULTS=${TUCKER_BENCH_RESULTS:-/workspace-SR006.nfs3/tucker-parallel-rank8-scale-20260826}
+RESULTS=${TUCKER_BENCH_RESULTS:-/workspace-SR006.nfs3/tucker-order3-screen-20260901}
 mkdir -p "$RESULTS/logs" "$RESULTS/results"
 
 if [ "${1:-}" = "disk" ]; then
@@ -27,13 +27,13 @@ import json
 import sys
 from pathlib import Path
 
-print("model\tvariant\trank_profile\tparameters\tdifference_from_dense\tmicrobatch\tstatus\tmedian_ms\tforward_ms\tbackward_ms\tforward_backward_ms\tforward_backward_tokens_per_second\toptimizer_ms\tretraction_ms\tforward_backward_peak_gb\tfull_peak_gb\treserved_gb\tstate_gb\tmodel_gb\tgrad_clip_ms\tstate_dtypes\tgpu")
+print("model\tvariant\trank_profile\tmode_layout\tparameters\tdifference_from_dense\tmicrobatch\tstatus\tmedian_ms\tforward_ms\tbackward_ms\tforward_backward_ms\tforward_backward_tokens_per_second\toptimizer_ms\tretraction_ms\tforward_backward_peak_gb\tfull_peak_gb\treserved_gb\tstate_gb\tmodel_gb\tgrad_clip_ms\tstate_dtypes\tgpu")
 for path in sorted(Path(sys.argv[1]).glob("*.json")):
     payload = json.loads(path.read_text())
     status = payload.get("status")
     if status != "complete":
         controls = payload.get("requested_controls", {})
-        print(f"{controls.get('model_size', '')}\t{payload.get('variant', '')}\t{controls.get('tucker_rank_profile', 'iso')}\t\t\t{controls.get('microbatch', '')}\t{status}")
+        print(f"{controls.get('model_size', '')}\t{payload.get('variant', '')}\t{controls.get('tucker_rank_profile', 'iso')}\t{controls.get('tucker_mode_layout', 'balanced4')}\t\t\t{controls.get('microbatch', '')}\t{status}")
         continue
     summary = payload["summary"]
     memory = payload["memory"]
@@ -41,6 +41,7 @@ for path in sorted(Path(sys.argv[1]).glob("*.json")):
         payload["model"]["name"],
         payload["variant"]["name"],
         payload["benchmark"].get("tucker_rank_profile", "iso"),
+        payload["benchmark"].get("tucker_mode_layout", "balanced4"),
         payload["model"]["actual_parameters"],
         payload["model"]["parameter_difference_from_dense"],
         payload["benchmark"]["microbatch"],
@@ -111,6 +112,15 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
             --models 257m \
             --variants tucker_reference,tucker_parallel \
             --rank-profiles progressive_133m_exact,progressive_133m_rank8,progressive_160m_exact,progressive_160m_rank8,progressive_190m_exact,progressive_190m_rank8,progressive_225m_exact,progressive_225m_rank8 \
+            --tucker-muon-streams 4
+    elif [ "${1:-}" = "order3-screen" ]; then
+        run_correctness && python -m scripts.tucker_benchmark.run_sweep \
+            --output-dir "$RESULTS/results" \
+            --models 257m \
+            --variants tucker_parallel \
+            --rank-profiles progressive_133m_rank8,progressive_225m_rank8 \
+            --mode-layouts balanced4,order3_input,order3_output \
+            --microbatches 1,16 \
             --tucker-muon-streams 4
     elif [ "${1:-}" = "pipeline" ] || [ "${1:-}" = "pipeline-257m" ]; then
         run_correctness && run_autotune

@@ -22,7 +22,7 @@ from experiments.fused_persistent_tucker.custom_backward.grouped_retraction impo
 from models.tucker_linear import TuckerLinear, retract_tucker_modules_
 
 
-def make_module(in_features, out_features, ranks):
+def make_module(in_features, out_features, ranks, mode_layout="balanced4"):
     return TuckerLinear(
         in_features,
         out_features,
@@ -31,6 +31,7 @@ def make_module(in_features, out_features, ranks):
         equal_params=False,
         forward_mode="chunked_contract",
         contract_chunk_size=16,
+        mode_layout=mode_layout,
         device="cuda",
         dtype=torch.float32,
     )
@@ -42,6 +43,14 @@ def main():
         [make_module(1024, 1024, (32, 32, 32, 32)) for _ in range(3)]
         + [make_module(1024, 2816, (32, 32, 44, 64)) for _ in range(2)]
         + [make_module(2816, 1024, (44, 64, 32, 32)) for _ in range(2)]
+        + [
+            make_module(1024, 1024, (16, 16, 64, 1), "order3_input")
+            for _ in range(2)
+        ]
+        + [
+            make_module(1024, 1024, (1, 64, 16, 16), "order3_output")
+            for _ in range(2)
+        ]
     )
     reference = copy.deepcopy(source)
     grouped = copy.deepcopy(source)
@@ -52,6 +61,9 @@ def main():
     retract_tucker_modules_(reference)
     result = grouped_retract_tucker_modules_(grouped, compute_diagnostics=True)
     if result["modules"] != len(grouped):
+        raise AssertionError(result)
+    expected_factors = sum(len(module.active_factor_names) for module in grouped)
+    if result["factors"] != expected_factors:
         raise AssertionError(result)
 
     for actual, expected in zip(grouped.parameters(), reference.parameters()):
