@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
@@ -51,6 +52,10 @@ def main():
             make_module(1024, 1024, (1, 64, 16, 16), "order3_output")
             for _ in range(2)
         ]
+        + [
+            make_module(1024, 1024, (56, 120, 120, 1), "order3_paired")
+            for _ in range(2)
+        ]
     )
     reference = copy.deepcopy(source)
     grouped = copy.deepcopy(source)
@@ -73,7 +78,60 @@ def main():
         torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-5)
     if result["max_orthogonality_error"] > 2e-5:
         raise AssertionError(result)
-    print("PASS grouped retraction parity and orthogonality")
+
+    transport_source = nn.ModuleList(
+        [
+            make_module(1024, 1024, (56, 120, 120, 1), "order3_paired")
+            for _ in range(3)
+        ]
+    )
+    transport_reference = copy.deepcopy(transport_source)
+    transport_grouped = copy.deepcopy(transport_source)
+    momentum_by_name = {
+        name: torch.randn_like(parameter)
+        for name, parameter in transport_source.named_parameters()
+    }
+
+    def make_optimizer(model):
+        return SimpleNamespace(
+            state={
+                parameter: {"momentum_buffer": momentum_by_name[name].clone()}
+                for name, parameter in model.named_parameters()
+            }
+        )
+
+    reference_optimizer = make_optimizer(transport_reference)
+    grouped_optimizer = make_optimizer(transport_grouped)
+    retract_tucker_modules_(
+        transport_reference,
+        optimizer=reference_optimizer,
+        transport_optimizer_state=True,
+    )
+    transport_result = grouped_retract_tucker_modules_(
+        transport_grouped,
+        optimizer=grouped_optimizer,
+        transport_optimizer_state=True,
+        compute_diagnostics=True,
+    )
+    for (name, actual), (_, expected) in zip(
+        transport_grouped.named_parameters(),
+        transport_reference.named_parameters(),
+    ):
+        torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+        torch.testing.assert_close(
+            grouped_optimizer.state[actual]["momentum_buffer"],
+            reference_optimizer.state[expected]["momentum_buffer"],
+            rtol=3e-5,
+            atol=3e-6,
+            msg=lambda message: f"{name}: {message}",
+        )
+    if transport_result["transported_cores"] != len(transport_grouped):
+        raise AssertionError(transport_result)
+    if transport_result["transported_factors"] != 3 * len(transport_grouped):
+        raise AssertionError(transport_result)
+    if transport_result["max_momentum_tangency_error"] > 3e-5:
+        raise AssertionError(transport_result)
+    print("PASS grouped retraction parity, transport, and orthogonality")
 
 
 if __name__ == "__main__":

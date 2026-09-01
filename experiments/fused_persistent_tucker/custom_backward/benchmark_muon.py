@@ -69,13 +69,14 @@ def _cache_bytes(model):
     seen = set()
     total = 0
     for module in model.modules():
-        cached = getattr(module, "_direct_tucker_work_cache", None)
-        if cached is None:
-            continue
-        for tensor in cached[1]:
-            if tensor.data_ptr() not in seen:
-                seen.add(tensor.data_ptr())
-                total += tensor.numel() * tensor.element_size()
+        for name in ("_direct_tucker_work_cache", "_paired_tucker_work_cache"):
+            cached = getattr(module, name, None)
+            if cached is None:
+                continue
+            for tensor in cached[1]:
+                if tensor.data_ptr() not in seen:
+                    seen.add(tensor.data_ptr())
+                    total += tensor.numel() * tensor.element_size()
     return total
 
 

@@ -271,6 +271,8 @@ def clear_work_caches(model) -> None:
     for module in model.modules():
         if hasattr(module, "_direct_tucker_work_cache"):
             del module._direct_tucker_work_cache
+        if hasattr(module, "_paired_tucker_work_cache"):
+            del module._paired_tucker_work_cache
 
 
 def _block(value: int) -> int:

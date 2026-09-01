@@ -276,7 +276,7 @@ def custom_tucker_linear(x, module, chunk_size: int, *, cache_policy: str):
     if module.mode_layout == "order3_paired":
         from models.tucker_paired import paired_tucker_linear
 
-        return paired_tucker_linear(x, module)
+        return paired_tucker_linear(x, module, cache_policy=cache_policy)
     # The hybrid policy spends memory only on the 24 largest 1024->2816
     # Gate/Up cores. Their BF16 copies cost about 135 MiB but cover roughly 45%
     # of all internal core elements, keeping the measured full-step peak below

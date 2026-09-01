@@ -264,6 +264,35 @@ class TuckerLinearTest(unittest.TestCase):
             self.assertEqual(custom_name, reference_name)
             torch.testing.assert_close(custom_parameter.grad, reference_parameter.grad)
 
+    def test_paired_order3_persistent_work_cache_tracks_parameter_versions(self):
+        from models.tucker_paired import paired_tucker_linear
+
+        module = TuckerLinear(
+            12,
+            18,
+            rank=(2, 3, 4, 1),
+            bias=False,
+            equal_params=False,
+            forward_mode="chunked_contract",
+            mode_layout="order3_paired",
+            dtype=torch.float64,
+        )
+        x = torch.randn(5, 12, dtype=torch.float64)
+        with torch.no_grad():
+            first = paired_tucker_linear(x, module, cache_policy="persistent")
+            first_cache = module._paired_tucker_work_cache
+            second = paired_tucker_linear(x, module, cache_policy="persistent")
+            self.assertIs(module._paired_tucker_work_cache, first_cache)
+            torch.testing.assert_close(second, first)
+
+            module.U1.add_(0.01)
+            updated = paired_tucker_linear(x, module, cache_policy="persistent")
+            self.assertNotEqual(module._paired_tucker_work_cache[0], first_cache[0])
+            torch.testing.assert_close(
+                updated,
+                F.linear(x, module.materialize_weight(dtype=x.dtype)),
+            )
+
     def test_materialized_weight_has_dense_shape(self):
         for in_features, out_features in (
             (12, 18),
