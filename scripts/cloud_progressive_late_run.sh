@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT=${TUCKER_LATE_ROOT:-/workspace-SR006.nfs3/tucker-late-growth-20260827}
+STORAGE_ROOT=${TUCKER_STORAGE_ROOT:-/workspace-SR006.nfs3}
+EXPECTED_TORCH_VERSION=${TUCKER_EXPECTED_TORCH_VERSION:-2.8.0}
 PYTHON_DEPS="${ROOT}/python"
 mkdir -p "${ROOT}/logs" "${ROOT}/exps" "${ROOT}/evals_cache" "${ROOT}/hf-cache" "${ROOT}/wandb" "${PYTHON_DEPS}"
 export PYTHONNOUSERSITE=1
@@ -12,8 +14,8 @@ MODE=${1:-preflight}
 echo "commit: $(git rev-parse HEAD)"
 echo "mode: ${MODE}"
 echo "mpi: ${OMPI_COMM_WORLD_RANK:-0}/${OMPI_COMM_WORLD_SIZE:-1}"
-df -h /workspace-SR006.nfs3
-df -i /workspace-SR006.nfs3
+df -h "${STORAGE_ROOT}"
+df -i "${STORAGE_ROOT}"
 
 if [[ "${OMPI_COMM_WORLD_SIZE:-1}" != "1" ]]; then
     echo "Progressive Tucker requires exactly one Cloud MPI rank" >&2
@@ -67,7 +69,7 @@ if ! python -c "import importlib.metadata; assert importlib.metadata.version('ai
         ai2-olmo-eval==0.8.5 torchmetrics==1.8.2 lightning-utilities==0.15.2 \
         cached-path==1.8.10 rich==13.9.4 importlib-resources==6.5.2
 fi
-python - "${PYTHON_DEPS}" <<'PY'
+python - "${PYTHON_DEPS}" "${EXPECTED_TORCH_VERSION}" <<'PY'
 import importlib.metadata
 import sys
 from pathlib import Path
@@ -76,9 +78,13 @@ import torch
 from olmo_eval import HFTokenizer, ICLMetric, build_task
 
 python_deps = Path(sys.argv[1]).resolve()
+expected_torch_version = sys.argv[2]
 torch_path = Path(torch.__file__).resolve()
-if torch.__version__.split("+", 1)[0] != "2.8.0":
-    raise RuntimeError(f"Expected system torch 2.8.0, found {torch.__version__} at {torch_path}")
+if torch.__version__.split("+", 1)[0] != expected_torch_version:
+    raise RuntimeError(
+        f"Expected system torch {expected_torch_version}, "
+        f"found {torch.__version__} at {torch_path}"
+    )
 if torch_path.is_relative_to(python_deps):
     raise RuntimeError(f"Refusing shadow torch installation at {torch_path}")
 if importlib.metadata.version("ai2-olmo-eval") != "0.8.5":

@@ -111,6 +111,9 @@ def main() -> None:
     def gpu_name(item):
         return item["gpu"] if input_is_tsv else item["gpu"]["name"]
 
+    def environment_value(key):
+        return "not recorded" if input_is_tsv else completed[0]["environment"][key]
+
     def rows_for(getter, digits=1):
         rows = []
         for profile in PROFILE_LABELS:
@@ -228,6 +231,8 @@ def main() -> None:
                     ["Commit", rf"\texttt{{{tex(args.commit)}}}"],
                     ["Run", rf"\texttt{{{tex(args.job)}}}"],
                     ["GPU", tex(gpu_name(completed[0]))],
+                    ["PyTorch", tex(environment_value("torch"))],
+                    ["CUDA", tex(environment_value("cuda"))],
                     ["Samples", "3 warmup + 12 measured"],
                 ],
                 ["Field", "Value"],

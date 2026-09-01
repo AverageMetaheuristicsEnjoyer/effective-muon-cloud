@@ -117,7 +117,7 @@
 \toprule
 \textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
 \midrule
-133M & Tucker-4 & 3.10 & 8.95 \\
+133M & Tucker-4 & 3.09 & 8.95 \\
 133M & Tucker-3: split input & 3.07 & 8.95 \\
 133M & Tucker-3: split output & 3.07 & 8.95 \\
 225M & Tucker-4 & 4.21 & 9.90 \\
@@ -133,7 +133,7 @@
 \toprule
 \textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
 \midrule
-133M & Tucker-4 & 3.10 & 8.95 \\
+133M & Tucker-4 & 3.09 & 8.95 \\
 133M & Tucker-3: split input & 3.07 & 8.95 \\
 133M & Tucker-3: split output & 3.07 & 8.95 \\
 225M & Tucker-4 & 4.21 & 9.90 \\
@@ -166,6 +166,8 @@
 Commit & \texttt{0a92e08e9bc62fd1d9485b7bf03d23b905524dc5} \\
 Run & \texttt{node207-23/gpu7} \\
 GPU & NVIDIA H100 80GB HBM3 \\
+PyTorch & 2.9.1+cu128 \\
+CUDA & 12.8 \\
 Samples & 3 warmup + 12 measured \\
 \bottomrule
 \end{tabular}
