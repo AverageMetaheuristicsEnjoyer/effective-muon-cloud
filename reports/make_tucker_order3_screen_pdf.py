@@ -44,6 +44,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--job", required=True)
+    parser.add_argument("--platform", default="Cloud.ru")
     args = parser.parse_args()
 
     input_is_tsv = args.input.suffix == ".tsv"
@@ -218,21 +219,21 @@ def main() -> None:
             r"\section{Fastest order-3 full step}",
             render_table(
                 winner_rows,
-                ["Budget", "MBxAcc", "Layout", "ms", "vs Tucker-4"],
+                ["Budget", "MBxAcc", "Layout", "ms", "time/Tucker-4"],
                 "lllrr",
             ),
             r"\section{Run}",
             render_table(
                 [
                     ["Commit", rf"\texttt{{{tex(args.commit)}}}"],
-                    ["Cloud job", rf"\texttt{{{tex(args.job)}}}"],
+                    ["Run", rf"\texttt{{{tex(args.job)}}}"],
                     ["GPU", tex(gpu_name(completed[0]))],
                     ["Samples", "3 warmup + 12 measured"],
                 ],
                 ["Field", "Value"],
                 "ll",
             ),
-            r"\footnotesize Order-3 is represented by three trainable factors and one fixed singleton buffer. The unsplit side uses the generic GEMM fallback in the current prototype.",
+            r"\footnotesize Order-3 is represented by three trainable factors and one fixed singleton buffer. The unsplit side uses the generic GEMM fallback in the current prototype. Ratios above 1 mean slower than Tucker-4.",
         ]
     )
 
@@ -248,15 +249,19 @@ def main() -> None:
 \titlespacing{\section}{0pt}{9pt}{4pt}
 \begin{document}
 \begin{center}
-{\LARGE\bfseries Tucker order-3 vs order-4}\[3pt]
-{\large Cloud.ru, H100 80GB, BF16 autocast, Llama geometry, seq 1024}\[2pt]
+{\LARGE\bfseries Tucker order-3 vs order-4}\\[3pt]
+{\large PLATFORM, H100 80GB, BF16 autocast, Llama geometry, seq 1024}\\[2pt]
 {16,384 tokens per optimizer step}
 \end{center}
 BODY
 \end{document}
 """
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(document.replace("BODY", "\n".join(sections)))
+    args.output.write_text(
+        document.replace("PLATFORM", tex(args.platform)).replace(
+            "BODY", "\n".join(sections)
+        )
+    )
 
 
 if __name__ == "__main__":
