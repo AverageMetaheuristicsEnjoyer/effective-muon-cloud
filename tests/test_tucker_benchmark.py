@@ -115,7 +115,11 @@ class TuckerBenchmarkTest(unittest.TestCase):
 
     def test_order3_rank8_profiles_match_stage_budgets(self):
         targets = {"133m": 133_000_000, "225m": 225_000_000}
-        for layout, singleton_index in (("order3_input", 3), ("order3_output", 0)):
+        for layout, singleton_index in (
+            ("order3_input", 3),
+            ("order3_output", 0),
+            ("order3_paired", 3),
+        ):
             for stage, target in targets.items():
                 with self.subTest(layout=layout, stage=stage):
                     _, plan, parameters, profile = tucker_benchmark_plan(
@@ -191,6 +195,35 @@ class TuckerBenchmarkTest(unittest.TestCase):
         )
         self.assertTrue(all(len(module.active_factor_names) == 3 for module in modules))
         self.assertTrue(all(module.ranks[3] == 1 for module in modules))
+
+    @unittest.skipUnless(find_spec("torch"), "PyTorch is not installed")
+    def test_paired_order3_plan_matches_constructed_model(self):
+        import torch
+
+        from models.tucker_linear import TuckerLinear
+        from scripts.tucker_benchmark.benchmark_train_step import (
+            instantiate_model,
+            make_config,
+        )
+
+        args = self.args()
+        args.variant = "tucker_reference"
+        args.tucker_rank_profile = "progressive_225m_rank8"
+        args.tucker_mode_layout = "order3_paired"
+        config = make_config(args)
+        model = instantiate_model(config, torch.device("meta"))
+        modules = [module for module in model.modules() if isinstance(module, TuckerLinear)]
+
+        self.assertEqual(
+            sum(parameter.numel() for parameter in model.parameters()),
+            config.target_parameter_count,
+        )
+        self.assertTrue(
+            all(module.mode_layout == "order3_paired" for module in modules)
+        )
+        self.assertTrue(all(len(module.active_factor_names) == 3 for module in modules))
+        self.assertTrue(all(module.ranks[3] == 1 for module in modules))
+        self.assertEqual(modules[0].modes, (64, 128, 128, 1))
 
 
 if __name__ == "__main__":

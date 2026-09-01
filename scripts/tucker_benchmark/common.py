@@ -6,6 +6,7 @@ import os
 import statistics
 import tempfile
 from functools import lru_cache
+from itertools import permutations
 from pathlib import Path
 
 from scripts.monarch_benchmark.common import MODEL_SPECS, model_spec
@@ -24,7 +25,12 @@ DEFAULT_TOKENS_PER_STEP = 16_384
 HARNESS_REVISION = 6
 TUCKER_RANK_MULTIPLE = 8
 FAST_ISO_FFN_WIDTHS = {"257m": 3072}
-TUCKER_MODE_LAYOUTS = ("balanced4", "order3_input", "order3_output")
+TUCKER_MODE_LAYOUTS = (
+    "balanced4",
+    "order3_input",
+    "order3_output",
+    "order3_paired",
+)
 
 PROGRESSIVE_257M_STAGES = (
     {
@@ -94,6 +100,57 @@ def _factor_pair(value: int) -> tuple[int, int]:
     return left, value // left
 
 
+def _factor_triple(value: int) -> tuple[int, int, int]:
+    best = None
+    for first in range(1, math.isqrt(value) + 1):
+        if value % first:
+            continue
+        remaining = value // first
+        for second in range(first, math.isqrt(remaining) + 1):
+            if remaining % second:
+                continue
+            third = remaining // second
+            if second > third:
+                continue
+            factors = (first, second, third)
+            key = (third - first, third, -first, factors)
+            if best is None or key < best[0]:
+                best = (key, factors)
+    return best[1]
+
+
+def _paired_factor_triples(
+    in_features: int,
+    out_features: int,
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    input_modes = _factor_triple(in_features)
+    output_factors = _factor_triple(out_features)
+    target = (in_features * out_features) ** (1.0 / 3.0)
+    output_modes = min(
+        set(permutations(output_factors)),
+        key=lambda candidate: (
+            max(
+                input_mode * output_mode
+                for input_mode, output_mode in zip(input_modes, candidate)
+            )
+            - min(
+                input_mode * output_mode
+                for input_mode, output_mode in zip(input_modes, candidate)
+            ),
+            sum(
+                abs(math.log(input_mode * output_mode / target))
+                for input_mode, output_mode in zip(input_modes, candidate)
+            ),
+            max(
+                input_mode * output_mode
+                for input_mode, output_mode in zip(input_modes, candidate)
+            ),
+            candidate,
+        ),
+    )
+    return input_modes, output_modes
+
+
 def _aligned_factor_pair(value: int, multiple: int) -> tuple[int, int]:
     left = math.isqrt(value)
     while left and (
@@ -132,6 +189,14 @@ def _tucker_modes(
         return (*_factor_pair(in_features), out_features, 1)
     if mode_layout == "order3_output":
         return (1, in_features, *_factor_pair(out_features))
+    if mode_layout == "order3_paired":
+        input_modes, output_modes = _paired_factor_triples(
+            in_features, out_features
+        )
+        return tuple(
+            input_mode * output_mode
+            for input_mode, output_mode in zip(input_modes, output_modes)
+        ) + (1,)
     raise ValueError(f"unknown Tucker mode layout {mode_layout!r}")
 
 

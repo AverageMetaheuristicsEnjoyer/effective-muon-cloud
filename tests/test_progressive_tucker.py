@@ -72,6 +72,7 @@ class ProgressiveTuckerCudaRegression(unittest.TestCase):
         cases = (
             ("order3_input", (2, 2, 3, 1), (3, 3, 5, 1), "U4"),
             ("order3_output", (1, 3, 2, 2), (1, 5, 3, 3), "U1"),
+            ("order3_paired", (2, 2, 3, 1), (3, 3, 5, 1), "U4"),
         )
         for layout, start_ranks, target_ranks, singleton_name in cases:
             with self.subTest(layout=layout):

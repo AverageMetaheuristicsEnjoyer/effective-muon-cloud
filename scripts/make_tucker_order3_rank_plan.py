@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument(
         "--layout",
         required=True,
-        choices=("order3_input", "order3_output"),
+        choices=("order3_input", "order3_output", "order3_paired"),
     )
     parser.add_argument("--profile", default="progressive_225m_rank8")
     parser.add_argument("--output", required=True, type=Path)

@@ -16,6 +16,8 @@ from models.tucker_linear import (
     TuckerLinear,
     auto_tucker_ranks,
     balanced_factor_pair,
+    balanced_factor_triple,
+    paired_factor_triples,
     retract_tucker_modules_,
     replace_all_linears_with_tucker,
     qr_retract_with_transport,
@@ -38,6 +40,23 @@ class TuckerLinearTest(unittest.TestCase):
                 pair = balanced_factor_pair(value)
                 self.assertEqual(pair, expected)
                 self.assertEqual(pair[0] * pair[1], value)
+
+    def test_paired_factor_triples_are_exact_and_balanced(self):
+        self.assertEqual(balanced_factor_triple(1024), (8, 8, 16))
+        self.assertEqual(balanced_factor_triple(2816), (11, 16, 16))
+        cases = {
+            (1024, 1024): ((8, 8, 16), (8, 16, 8), (64, 128, 128)),
+            (1024, 2816): ((8, 8, 16), (16, 16, 11), (128, 128, 176)),
+            (2816, 1024): ((11, 16, 16), (16, 8, 8), (176, 128, 128)),
+        }
+        for shape, expected in cases.items():
+            with self.subTest(shape=shape):
+                input_modes, output_modes = paired_factor_triples(*shape)
+                paired = tuple(
+                    input_mode * output_mode
+                    for input_mode, output_mode in zip(input_modes, output_modes)
+                )
+                self.assertEqual((input_modes, output_modes, paired), expected)
 
     def test_auto_ranks_for_experiment_shapes(self):
         expected = {
@@ -147,6 +166,7 @@ class TuckerLinearTest(unittest.TestCase):
         cases = (
             ("order3_input", (2, 3, 4, 1), "U4"),
             ("order3_output", (1, 4, 2, 3), "U1"),
+            ("order3_paired", (2, 2, 2, 1), "U4"),
         )
         for layout, ranks, inactive_name in cases:
             with self.subTest(layout=layout):
@@ -203,6 +223,46 @@ class TuckerLinearTest(unittest.TestCase):
                     rtol=1e-10,
                     atol=1e-10,
                 )
+
+    def test_paired_order3_custom_backward_matches_materialized(self):
+        torch.manual_seed(20260901)
+        custom = TuckerLinear(
+            12,
+            18,
+            rank=(2, 3, 4, 1),
+            bias=False,
+            equal_params=False,
+            forward_mode="chunked_contract",
+            mode_layout="order3_paired",
+            dtype=torch.float64,
+        )
+        reference = TuckerLinear(
+            12,
+            18,
+            rank=(2, 3, 4, 1),
+            bias=False,
+            equal_params=False,
+            forward_mode="materialize",
+            mode_layout="order3_paired",
+            dtype=torch.float64,
+        )
+        reference.load_state_dict(custom.state_dict())
+        custom_input = torch.randn(7, 12, dtype=torch.float64, requires_grad=True)
+        reference_input = custom_input.detach().clone().requires_grad_(True)
+        grad_output = torch.randn(7, 18, dtype=torch.float64)
+
+        custom_output = custom(custom_input)
+        reference_output = reference(reference_input)
+        custom_output.backward(grad_output)
+        reference_output.backward(grad_output)
+
+        torch.testing.assert_close(custom_output, reference_output)
+        torch.testing.assert_close(custom_input.grad, reference_input.grad)
+        for (custom_name, custom_parameter), (reference_name, reference_parameter) in zip(
+            custom.named_parameters(), reference.named_parameters()
+        ):
+            self.assertEqual(custom_name, reference_name)
+            torch.testing.assert_close(custom_parameter.grad, reference_parameter.grad)
 
     def test_materialized_weight_has_dense_shape(self):
         for in_features, out_features in (

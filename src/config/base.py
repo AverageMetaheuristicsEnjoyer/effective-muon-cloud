@@ -416,10 +416,16 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument(
         "--tucker-mode-layout",
         default="balanced4",
-        choices=["balanced4", "order3_input", "order3_output"],
+        choices=[
+            "balanced4",
+            "order3_input",
+            "order3_output",
+            "order3_paired",
+        ],
         help=(
             "Tucker tensorization layout. The order-3 layouts split only the "
-            "input or output dimension and keep one fixed singleton mode."
+            "input or output dimension, or pair three input/output factors; "
+            "all keep one fixed singleton mode."
         ),
     )
     parser.add_argument(

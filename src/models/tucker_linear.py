@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from itertools import permutations
 import json
 import math
 from pathlib import Path
@@ -34,6 +35,55 @@ def balanced_factor_pair(value: int) -> tuple[int, int]:
     while value % left:
         left -= 1
     return left, value // left
+
+
+def balanced_factor_triple(value: int) -> tuple[int, int, int]:
+    """Return exact factors with the smallest spread around cbrt(value)."""
+    if value <= 0:
+        raise ValueError(f"feature dimension must be positive, got {value}")
+    best = None
+    for first in range(1, math.isqrt(value) + 1):
+        if value % first:
+            continue
+        remaining = value // first
+        for second in range(first, math.isqrt(remaining) + 1):
+            if remaining % second:
+                continue
+            third = remaining // second
+            if second > third:
+                continue
+            factors = (first, second, third)
+            key = (third - first, third, -first, factors)
+            if best is None or key < best[0]:
+                best = (key, factors)
+    if best is None:
+        raise ValueError(f"could not factor feature dimension {value}")
+    return best[1]
+
+
+def paired_factor_triples(
+    in_features: int,
+    out_features: int,
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Pair exact input/output triples so their products are near-balanced."""
+    input_modes = balanced_factor_triple(in_features)
+    output_factors = balanced_factor_triple(out_features)
+    target = (in_features * out_features) ** (1.0 / 3.0)
+    best = None
+    for output_modes in sorted(set(permutations(output_factors))):
+        paired = tuple(
+            input_mode * output_mode
+            for input_mode, output_mode in zip(input_modes, output_modes)
+        )
+        key = (
+            max(paired) - min(paired),
+            sum(abs(math.log(mode / target)) for mode in paired),
+            max(paired),
+            output_modes,
+        )
+        if best is None or key < best[0]:
+            best = (key, output_modes)
+    return input_modes, best[1]
 
 
 def _parameter_count(
@@ -325,21 +375,37 @@ class TuckerLinear(nn.Module):
             self.in_modes = balanced_factor_pair(self.in_features)
             self.out_modes = balanced_factor_pair(self.out_features)
             inactive_factor = None
+            modes = (*self.in_modes, *self.out_modes)
         elif mode_layout == "order3_input":
             self.in_modes = balanced_factor_pair(self.in_features)
             self.out_modes = (self.out_features, 1)
             inactive_factor = "U4"
+            modes = (*self.in_modes, *self.out_modes)
         elif mode_layout == "order3_output":
             self.in_modes = (1, self.in_features)
             self.out_modes = balanced_factor_pair(self.out_features)
             inactive_factor = "U1"
+            modes = (*self.in_modes, *self.out_modes)
+        elif mode_layout == "order3_paired":
+            self.paired_in_modes, self.paired_out_modes = paired_factor_triples(
+                self.in_features, self.out_features
+            )
+            self.in_modes = (self.in_features, 1)
+            self.out_modes = (self.out_features, 1)
+            modes = tuple(
+                input_mode * output_mode
+                for input_mode, output_mode in zip(
+                    self.paired_in_modes, self.paired_out_modes
+                )
+            ) + (1,)
+            inactive_factor = "U4"
         else:
             raise ValueError(f"unknown Tucker mode layout {mode_layout!r}")
         self.mode_layout = mode_layout
         self.active_factor_names = tuple(
             name for name in ("U1", "U2", "U3", "U4") if name != inactive_factor
         )
-        self.modes = (*self.in_modes, *self.out_modes)
+        self.modes = modes
         self.equal_params = bool(equal_params)
         self.init_std = float(init_std)
         if extra_parameters < 0:
@@ -386,8 +452,6 @@ class TuckerLinear(nn.Module):
             )
         self.ranks = ranks
         r1, r2, r3, r4 = ranks
-        n1, n2 = self.in_modes
-        m1, m2 = self.out_modes
         factory_kwargs = {"device": device, "dtype": dtype}
 
         self.tucker_parameter_count = _parameter_count(self.modes, self.ranks) - int(
@@ -404,7 +468,9 @@ class TuckerLinear(nn.Module):
                 "mode (--no-tucker-equal-params) may use over-dense ranks."
             )
 
-        if self.forward_mode == "auto":
+        if self.forward_mode == "auto" and self.mode_layout == "order3_paired":
+            self.resolved_forward_mode = "materialize"
+        elif self.forward_mode == "auto":
             r1, r2, r3, r4 = self.ranks
             n1, n2 = self.in_modes
             m1, _ = self.out_modes
@@ -449,11 +515,8 @@ class TuckerLinear(nn.Module):
 
         # Allocate only after all rank/budget checks so a bad manual rank
         # cannot OOM before producing its intended validation error.
-        for name, rows, rank_value in (
-            ("U1", n1, r1),
-            ("U2", n2, r2),
-            ("U3", m1, r3),
-            ("U4", m2, r4),
+        for name, rows, rank_value in zip(
+            ("U1", "U2", "U3", "U4"), self.modes, self.ranks
         ):
             value = torch.empty(rows, rank_value, **factory_kwargs)
             if name == inactive_factor:
@@ -556,6 +619,18 @@ class TuckerLinear(nn.Module):
     @property
     def forward_flops_per_token(self) -> float:
         """Configured forward-path FLOPs per token (two FLOPs per MAC)."""
+        if self.mode_layout == "order3_paired":
+            p1, p2, p3, _ = self.modes
+            r1, r2, r3, _ = self.ranks
+            reconstruction_macs = (
+                p1 * r1 * r2 * r3
+                + p1 * p2 * r2 * r3
+                + p1 * p2 * p3 * r3
+            )
+            return (
+                2 * self.dense_parameter_count
+                + 2 * reconstruction_macs / self.expected_tokens_per_forward
+            )
         n1, n2 = self.in_modes
         m1, _ = self.out_modes
         r1, r2, r3, r4 = self.ranks
@@ -585,6 +660,10 @@ class TuckerLinear(nn.Module):
         return 2 * macs
 
     def _tucker_forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.mode_layout == "order3_paired":
+            from models.tucker_paired import paired_tucker_linear
+
+            return paired_tucker_linear(x, self)
         n1, n2 = self.in_modes
         m1, m2 = self.out_modes
         r1, r2, r3, r4 = self.ranks
@@ -633,6 +712,16 @@ class TuckerLinear(nn.Module):
             return F.linear(x, weight, self.bias)
 
         if self.resolved_forward_mode == "chunked_contract":
+            if self.mode_layout == "order3_paired":
+                from models.tucker_paired import paired_tucker_linear
+
+                output = paired_tucker_linear(x, self)
+                residual = self._residual_forward(x)
+                if residual is not None:
+                    output = output + residual
+                if self.bias is not None:
+                    output = output + self.bias.to(dtype=output.dtype)
+                return output
             from models.tucker_chunked import chunked_tucker_linear
 
             output = chunked_tucker_linear(x, self, self.contract_chunk_size)
@@ -669,6 +758,23 @@ class TuckerLinear(nn.Module):
         U3 = self.U3.to(dtype=dtype)
         U4 = self.U4.to(dtype=dtype)
         core = self.core_matrix.to(dtype=dtype)
+        if self.mode_layout == "order3_paired":
+            from models.tucker_paired import paired_tensor_to_weight
+
+            r1, r2, r3, _ = self.ranks
+            paired = torch.einsum(
+                "abc,xa,yb,zc->xyz",
+                core.reshape(r3, r1, r2).permute(1, 2, 0),
+                U1,
+                U2,
+                U3,
+            )
+            weight = paired_tensor_to_weight(
+                paired, self.paired_in_modes, self.paired_out_modes
+            )
+            if self.residual_matrix is not None or self.residual_tail is not None:
+                weight = self._add_residual_to_weight(weight)
+            return weight
         r1, r2, r3, r4 = self.ranks
         n1, n2 = self.in_modes
         m1, m2 = self.out_modes
@@ -681,21 +787,25 @@ class TuckerLinear(nn.Module):
         )
 
         if self.residual_matrix is not None or self.residual_tail is not None:
-            full_columns = self._residual_full_columns
-            partial_rows = self._residual_partial_rows
-            if full_columns:
-                weight = weight.index_add(
-                    1,
-                    self.residual_columns[:full_columns],
-                    self.residual_matrix.to(dtype=weight.dtype),
-                )
-            if partial_rows:
-                tail_column = self.residual_columns[full_columns].reshape(1)
-                tail = F.pad(
-                    self.residual_tail.to(dtype=weight.dtype),
-                    (0, self.out_features - partial_rows),
-                ).unsqueeze(1)
-                weight = weight.index_add(1, tail_column, tail)
+            weight = self._add_residual_to_weight(weight)
+        return weight
+
+    def _add_residual_to_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        full_columns = self._residual_full_columns
+        partial_rows = self._residual_partial_rows
+        if full_columns:
+            weight = weight.index_add(
+                1,
+                self.residual_columns[:full_columns],
+                self.residual_matrix.to(dtype=weight.dtype),
+            )
+        if partial_rows:
+            tail_column = self.residual_columns[full_columns].reshape(1)
+            tail = F.pad(
+                self.residual_tail.to(dtype=weight.dtype),
+                (0, self.out_features - partial_rows),
+            ).unsqueeze(1)
+            weight = weight.index_add(1, tail_column, tail)
         return weight
 
     @torch.no_grad()
