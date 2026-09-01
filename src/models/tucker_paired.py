@@ -92,18 +92,17 @@ class PairedTuckerLinearFunction(torch.autograd.Function):
         r1, r2 = U1w.shape[1], U2w.shape[1]
         r3 = U3w.shape[1]
         core_tensor = corew.reshape(r3, r1, r2).permute(1, 2, 0)
-        grad_core = torch.einsum(
-            "xyz,xa,yb,zc->abc", grad_paired, U1w, U2w, U3w
-        )
-        grad_U1 = torch.einsum(
-            "xyz,abc,yb,zc->xa", grad_paired, core_tensor, U2w, U3w
-        )
-        grad_U2 = torch.einsum(
-            "xyz,abc,xa,zc->yb", grad_paired, core_tensor, U1w, U3w
-        )
-        grad_U3 = torch.einsum(
-            "xyz,abc,xa,yb->zc", grad_paired, core_tensor, U1w, U2w
-        )
+        projected_c = torch.einsum("xyz,zc->xyc", grad_paired, U3w)
+        projected_bc = torch.einsum("xyc,yb->xbc", projected_c, U2w)
+        grad_core = torch.einsum("xbc,xa->abc", projected_bc, U1w)
+        grad_U1 = torch.einsum("xbc,abc->xa", projected_bc, core_tensor)
+
+        projected_ac = torch.einsum("xyc,xa->ayc", projected_c, U1w)
+        grad_U2 = torch.einsum("ayc,abc->yb", projected_ac, core_tensor)
+
+        projected_bz = torch.einsum("xyz,yb->xbz", grad_paired, U2w)
+        projected_abz = torch.einsum("xbz,xa->abz", projected_bz, U1w)
+        grad_U3 = torch.einsum("abz,abc->zc", projected_abz, core_tensor)
         grad_core = grad_core.permute(2, 0, 1).reshape_as(core)
         return (
             grad_x.reshape_as(x),
