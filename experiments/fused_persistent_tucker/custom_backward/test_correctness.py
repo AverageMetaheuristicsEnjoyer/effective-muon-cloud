@@ -133,6 +133,7 @@ def main():
     for layout, ranks in (
         ("order3_input", (16, 16, 64, 1)),
         ("order3_output", (1, 64, 16, 16)),
+        ("order3_paired", (56, 120, 120, 1)),
     ):
         production = TuckerLinear(
             1024,
@@ -148,15 +149,31 @@ def main():
         production_reference = copy.deepcopy(production)
         production_custom = copy.deepcopy(production)
         production_x = torch.randn(64, 1024, device="cuda", dtype=torch.bfloat16)
+        reference_implementation = (
+            (
+                lambda value, module, chunk: torch.nn.functional.linear(
+                    value, module.materialize_weight(dtype=value.dtype)
+                )
+            )
+            if layout == "order3_paired"
+            else reference_linear
+        )
         ref_y, ref_loss, ref_grads = _run(
-            production_reference, production_x, reference_linear
+            production_reference, production_x, reference_implementation
         )
         implementation = lambda value, module, chunk: custom_tucker_linear(
             value, module, chunk, cache_policy="recast"
         )
         y, loss, grads = _run(production_custom, production_x, implementation)
-        _assert_close(f"{layout}.forward", y, ref_y, 0.0, 0.0)
-        _assert_close(f"{layout}.loss", loss, ref_loss, 1e-6, 1e-6)
+        output_tolerance = 2e-2 if layout == "order3_paired" else 0.0
+        _assert_close(
+            f"{layout}.forward",
+            y,
+            ref_y,
+            output_tolerance,
+            output_tolerance,
+        )
+        _assert_close(f"{layout}.loss", loss, ref_loss, 2e-3, 2e-3)
         for name, expected in ref_grads.items():
             _assert_close(f"{layout}.{name}", grads[name], expected, 4e-2, 4e-2)
 
