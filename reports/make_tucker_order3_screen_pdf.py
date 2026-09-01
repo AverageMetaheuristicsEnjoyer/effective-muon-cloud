@@ -239,7 +239,7 @@ def main() -> None:
                 ["Field", "Value"],
                 "ll",
             ),
-            r"\footnotesize Every order-3 layout has three trainable factors and one fixed singleton buffer. Paired balanced groups three exact input/output factor pairs; split-input/output leave one side unsplit. Ratios above 1 mean slower than Tucker-4.",
+            r"\footnotesize Every order-3 layout has three trainable factors and one fixed singleton buffer. Paired balanced groups three exact input/output factor pairs, pre-packs a BF16 operator, and reuses saved expansion intermediates in backward. Split-input/output leave one side unsplit. Ratios above 1 mean slower than Tucker-4.",
         ]
     )
 

@@ -1,0 +1,192 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,top=14mm,bottom=14mm,left=16mm,right=16mm]{geometry}
+\usepackage{fontspec}
+\usepackage{booktabs}
+\usepackage{titlesec}
+\setmainfont{DejaVu Sans}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.08}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.5em}{}
+\titlespacing{\section}{0pt}{9pt}{4pt}
+\begin{document}
+\begin{center}
+{\LARGE\bfseries Tucker order-3 vs order-4}\\[3pt]
+{\large node207-23, H100 80GB, BF16 autocast, Llama geometry, seq 1024}\\[2pt]
+{16,384 tokens per optimizer step}
+\end{center}
+\section{Parameter count}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{Parameters} & \textbf{vs dense} \\
+\midrule
+133M & Tucker-4 & 132,998,816 & -124,190,048 \\
+133M & Tucker-3: split input & 133,002,112 & -124,186,752 \\
+133M & Tucker-3: split output & 132,999,936 & -124,188,928 \\
+133M & Tucker-3: paired balanced & 132,999,680 & -124,189,184 \\
+225M & Tucker-4 & 225,023,872 & -32,164,992 \\
+225M & Tucker-3: split input & 225,000,704 & -32,188,160 \\
+225M & Tucker-3: split output & 224,997,120 & -32,191,744 \\
+225M & Tucker-3: paired balanced & 224,999,552 & -32,189,312 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Forward, ms}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
+\midrule
+133M & Tucker-4 & 622.9 & 49.5 \\
+133M & Tucker-3: split input & 642.6 & 102.6 \\
+133M & Tucker-3: split output & 611.9 & 91.6 \\
+133M & Tucker-3: paired balanced & 637.8 & 55.0 \\
+225M & Tucker-4 & 584.8 & 58.2 \\
+225M & Tucker-3: split input & 602.5 & 110.6 \\
+225M & Tucker-3: split output & 621.5 & 101.4 \\
+225M & Tucker-3: paired balanced & 650.6 & 55.6 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Backward, ms}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
+\midrule
+133M & Tucker-4 & 767.7 & 87.8 \\
+133M & Tucker-3: split input & 735.7 & 149.1 \\
+133M & Tucker-3: split output & 724.1 & 173.0 \\
+133M & Tucker-3: paired balanced & 556.7 & 73.7 \\
+225M & Tucker-4 & 717.2 & 113.8 \\
+225M & Tucker-3: split input & 696.6 & 174.0 \\
+225M & Tucker-3: split output & 732.4 & 203.8 \\
+225M & Tucker-3: paired balanced & 559.1 & 76.7 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Optimizer, ms}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
+\midrule
+133M & Tucker-4 & 86.0 & 66.0 \\
+133M & Tucker-3: split input & 84.6 & 68.3 \\
+133M & Tucker-3: split output & 80.3 & 57.8 \\
+133M & Tucker-3: paired balanced & 82.0 & 55.4 \\
+225M & Tucker-4 & 87.0 & 71.2 \\
+225M & Tucker-3: split input & 81.9 & 72.6 \\
+225M & Tucker-3: split output & 93.9 & 88.1 \\
+225M & Tucker-3: paired balanced & 84.6 & 66.6 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Retraction, ms}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
+\midrule
+133M & Tucker-4 & 20.9 & 21.3 \\
+133M & Tucker-3: split input & 95.2 & 96.6 \\
+133M & Tucker-3: split output & 110.3 & 111.1 \\
+133M & Tucker-3: paired balanced & 50.4 & 51.6 \\
+225M & Tucker-4 & 28.1 & 29.1 \\
+225M & Tucker-3: split input & 384.2 & 384.4 \\
+225M & Tucker-3: split output & 364.4 & 364.7 \\
+225M & Tucker-3: paired balanced & 103.6 & 104.8 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Full step, ms}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
+\midrule
+133M & Tucker-4 & 1500.9 & 225.4 \\
+133M & Tucker-3: split input & 1561.2 & 417.6 \\
+133M & Tucker-3: split output & 1529.3 & 434.2 \\
+133M & Tucker-3: paired balanced & 1329.1 & 236.9 \\
+225M & Tucker-4 & 1419.6 & 273.2 \\
+225M & Tucker-3: split input & 1768.7 & 742.5 \\
+225M & Tucker-3: split output & 1818.1 & 758.8 \\
+225M & Tucker-3: paired balanced & 1403.1 & 304.9 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Forward+backward peak allocated, GB}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
+\midrule
+133M & Tucker-4 & 3.09 & 8.95 \\
+133M & Tucker-3: split input & 3.07 & 8.95 \\
+133M & Tucker-3: split output & 3.07 & 8.95 \\
+133M & Tucker-3: paired balanced & 3.75 & 9.63 \\
+225M & Tucker-4 & 4.21 & 9.90 \\
+225M & Tucker-3: split input & 4.19 & 9.72 \\
+225M & Tucker-3: split output & 4.20 & 9.70 \\
+225M & Tucker-3: paired balanced & 5.34 & 10.84 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Full-step peak allocated, GB}
+\begin{center}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Budget} & \textbf{Layout} & \textbf{MB 1$\times$16} & \textbf{MB 16$\times$1} \\
+\midrule
+133M & Tucker-4 & 3.09 & 8.95 \\
+133M & Tucker-3: split input & 3.07 & 8.95 \\
+133M & Tucker-3: split output & 3.07 & 8.95 \\
+133M & Tucker-3: paired balanced & 3.75 & 9.63 \\
+225M & Tucker-4 & 4.21 & 9.90 \\
+225M & Tucker-3: split input & 5.60 & 9.72 \\
+225M & Tucker-3: split output & 4.51 & 9.70 \\
+225M & Tucker-3: paired balanced & 5.34 & 10.84 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Fastest order-3 full step}
+\begin{center}
+\small
+\begin{tabular}{lllrr}
+\toprule
+\textbf{Budget} & \textbf{MBxAcc} & \textbf{Layout} & \textbf{ms} & \textbf{time/Tucker-4} \\
+\midrule
+133M & 1x16 & Tucker-3: paired balanced & 1329.1 & 0.886x \\
+133M & 16x1 & Tucker-3: paired balanced & 236.9 & 1.051x \\
+225M & 1x16 & Tucker-3: paired balanced & 1403.1 & 0.988x \\
+225M & 16x1 & Tucker-3: paired balanced & 304.9 & 1.116x \\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Run}
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Field} & \textbf{Value} \\
+\midrule
+Commit & \texttt{1fbad1e} \\
+Run & \texttt{node207-23/gpu6} \\
+GPU & NVIDIA H100 80GB HBM3 \\
+PyTorch & 2.9.1+cu128 \\
+CUDA & 12.8 \\
+Samples & 3 warmup + 12 measured \\
+\bottomrule
+\end{tabular}
+\end{center}
+\footnotesize Every order-3 layout has three trainable factors and one fixed singleton buffer. Paired balanced groups three exact input/output factor pairs, pre-packs a BF16 operator, and reuses saved expansion intermediates in backward. Split-input/output leave one side unsplit. Ratios above 1 mean slower than Tucker-4.
+\end{document}

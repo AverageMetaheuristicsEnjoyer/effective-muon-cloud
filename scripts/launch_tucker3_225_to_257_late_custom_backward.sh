@@ -13,7 +13,7 @@ case "${TUCKER_MODE_LAYOUT}" in
     *) echo "Expected order3_input, order3_output, or order3_paired" >&2; exit 2 ;;
 esac
 
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"llama257m_tucker3_${TUCKER_MODE_LAYOUT}_late_225m_to_257m_customfb_bs16acc8_run1"}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"llama257m_tucker3_${TUCKER_MODE_LAYOUT}_late_225m_to_257m_customfb_bs16acc8_production_run1"}
 export TARGET_PARAMETER_COUNT=${INITIAL_PARAMETERS}
 export TARGET_PARAMETER_TOLERANCE=0
 export TUCKER_RANK_PLAN
