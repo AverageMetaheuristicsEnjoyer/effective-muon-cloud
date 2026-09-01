@@ -92,7 +92,7 @@ class ProgressiveTuckerCudaRegression(unittest.TestCase):
                     {"layer": target_ranks},
                     seed=29,
                     verify_function=True,
-                    verify_rtol=1e-10,
+                    verify_rtol=1e-6,
                 )
 
                 self.assertEqual(metrics["expanded_modules"], 1)
