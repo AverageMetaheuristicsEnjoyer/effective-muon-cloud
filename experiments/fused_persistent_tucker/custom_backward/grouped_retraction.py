@@ -1,4 +1,4 @@
-"""Batched QR gauge fixing for equal-shaped Tucker modules."""
+"""Batched QR gauge fixing for Tucker modules."""
 
 from __future__ import annotations
 
@@ -62,12 +62,13 @@ def grouped_retract_tucker_modules_(
     transport_optimizer_state: bool = False,
     compute_diagnostics: bool = False,
 ):
-    """Retract equal-rank modules with batched QR and batched core products."""
+    """Retract Tucker modules with batched QR and batched core products."""
     if transport_optimizer_state and optimizer is None:
         raise ValueError("Vector transport requires the optimizer instance.")
 
     modules = [module for module in model.modules() if isinstance(module, TuckerLinear)]
     groups = defaultdict(list)
+    factor_groups = defaultdict(list)
     for module in modules:
         groups[
             (
@@ -76,9 +77,47 @@ def grouped_retract_tucker_modules_(
                 tuple(module.active_factor_names),
             )
         ].append(module)
+        for factor_name in module.active_factor_names:
+            factor = getattr(module, factor_name)
+            factor_groups[(tuple(factor.shape), factor.dtype, factor.device)].append(
+                factor
+            )
 
     transported_cores = 0
     transported_factors = 0
+    r_by_factor = {}
+    d_r_by_factor = {}
+    for parameters in factor_groups.values():
+        factor_batch = torch.stack(parameters)
+        if transport_optimizer_state:
+            factor_states = [optimizer.state.get(factor, {}) for factor in parameters]
+            factor_momenta = [state.get("momentum_buffer") for state in factor_states]
+            if any(momentum is None for momentum in factor_momenta):
+                raise RuntimeError(
+                    "Tucker vector transport requires momentum_buffer state for "
+                    "every grouped factor."
+                )
+            q_batch, r_batch, transported_batch, d_r_batch = (
+                _batched_qr_with_transport(
+                    factor_batch,
+                    torch.stack(factor_momenta),
+                )
+            )
+            torch._foreach_copy_(
+                [state["momentum_buffer"] for state in factor_states],
+                list(transported_batch.unbind(0)),
+            )
+            d_r_by_factor.update(zip(parameters, d_r_batch.unbind(0)))
+            transported_factors += len(parameters)
+        else:
+            q_batch, r_batch = torch.linalg.qr(factor_batch, mode="reduced")
+            signs = torch.sign(torch.diagonal(r_batch, dim1=-2, dim2=-1))
+            signs[signs == 0] = 1.0
+            q_batch = q_batch * signs.unsqueeze(-2)
+            r_batch = r_batch * signs.unsqueeze(-1)
+        torch._foreach_copy_(parameters, list(q_batch.unbind(0)))
+        r_by_factor.update(zip(parameters, r_batch.unbind(0)))
+
     for (_, ranks, active_factor_names), same_rank_modules in groups.items():
         r1, r2, r3, r4 = ranks
         cores = torch.stack(
@@ -110,42 +149,14 @@ def grouped_retract_tucker_modules_(
             if name in active_factor_names
         ):
             parameters = [getattr(module, factor_name) for module in same_rank_modules]
-            factor_batch = torch.stack(parameters)
-            factor_states = None
-            transported_batch = None
-            d_r_batch = None
-            if transport_optimizer_state:
-                factor_states = [optimizer.state.get(factor, {}) for factor in parameters]
-                factor_momenta = [
-                    state.get("momentum_buffer") for state in factor_states
-                ]
-                if any(momentum is None for momentum in factor_momenta):
-                    raise RuntimeError(
-                        "Tucker vector transport requires momentum_buffer state for "
-                        "every grouped factor."
-                    )
-                q_batch, r_batch, transported_batch, d_r_batch = (
-                    _batched_qr_with_transport(
-                        factor_batch,
-                        torch.stack(factor_momenta),
-                    )
-                )
-            else:
-                q_batch, r_batch = torch.linalg.qr(factor_batch, mode="reduced")
-                signs = torch.sign(torch.diagonal(r_batch, dim1=-2, dim2=-1))
-                signs[signs == 0] = 1.0
-                q_batch = q_batch * signs.unsqueeze(-2)
-                r_batch = r_batch * signs.unsqueeze(-1)
-            torch._foreach_copy_(parameters, list(q_batch.unbind(0)))
-            if transport_optimizer_state:
-                torch._foreach_copy_(
-                    [state["momentum_buffer"] for state in factor_states],
-                    list(transported_batch.unbind(0)),
-                )
+            r_batch = torch.stack([r_by_factor[factor] for factor in parameters])
 
             old_cores = cores
             cores = _batched_mode_product(r_batch, old_cores, mode)
             if transport_optimizer_state:
+                d_r_batch = torch.stack(
+                    [d_r_by_factor[factor] for factor in parameters]
+                )
                 core_directions = _batched_mode_product(
                     r_batch, core_directions, mode
                 ) + _batched_mode_product(d_r_batch, old_cores, mode)
@@ -167,7 +178,6 @@ def grouped_retract_tucker_modules_(
                 core_direction_matrices,
             )
             transported_cores += len(same_rank_modules)
-            transported_factors += len(same_rank_modules) * len(active_factor_names)
 
     result = {
         "modules": len(modules),

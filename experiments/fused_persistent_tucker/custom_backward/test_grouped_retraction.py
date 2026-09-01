@@ -84,6 +84,7 @@ def main():
             make_module(1024, 1024, (56, 120, 120, 1), "order3_paired")
             for _ in range(3)
         ]
+        + [make_module(1024, 1024, (56, 120, 128, 1), "order3_paired")]
     )
     transport_reference = copy.deepcopy(transport_source)
     transport_grouped = copy.deepcopy(transport_source)
