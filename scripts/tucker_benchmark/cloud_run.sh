@@ -119,7 +119,7 @@ LOG="$RESULTS/logs/$(date +%F_%H%M%S)-$$.log"
             --models 257m \
             --variants tucker_parallel \
             --rank-profiles progressive_133m_rank8,progressive_225m_rank8 \
-            --mode-layouts balanced4,order3_input,order3_output \
+            --mode-layouts balanced4,order3_input,order3_output,order3_paired \
             --microbatches 1,16 \
             --tucker-muon-streams 4
     elif [ "${1:-}" = "pipeline" ] || [ "${1:-}" = "pipeline-257m" ]; then

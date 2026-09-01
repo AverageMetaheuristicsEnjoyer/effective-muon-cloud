@@ -11,6 +11,7 @@ LAYOUT_LABELS = {
     "balanced4": "Tucker-4",
     "order3_input": "Tucker-3: split input",
     "order3_output": "Tucker-3: split output",
+    "order3_paired": "Tucker-3: paired balanced",
 }
 PROFILE_LABELS = {
     "progressive_133m_rank8": "133M",
@@ -204,7 +205,7 @@ def main() -> None:
                 for layout in LAYOUT_LABELS
             }
             winner = min(
-                ("order3_input", "order3_output"),
+                tuple(layout for layout in LAYOUT_LABELS if layout != "balanced4"),
                 key=candidates.get,
             )
             baseline = candidates["balanced4"]
@@ -238,7 +239,7 @@ def main() -> None:
                 ["Field", "Value"],
                 "ll",
             ),
-            r"\footnotesize Order-3 is represented by three trainable factors and one fixed singleton buffer. The unsplit side uses the generic GEMM fallback in the current prototype. Ratios above 1 mean slower than Tucker-4.",
+            r"\footnotesize Every order-3 layout has three trainable factors and one fixed singleton buffer. Paired balanced groups three exact input/output factor pairs; split-input/output leave one side unsplit. Ratios above 1 mean slower than Tucker-4.",
         ]
     )
 

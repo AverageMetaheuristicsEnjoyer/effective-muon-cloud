@@ -9,7 +9,8 @@ TUCKER_RANK_PLAN=${TUCKER_RANK_PLAN:?TUCKER_RANK_PLAN is required}
 case "${TUCKER_MODE_LAYOUT}" in
     order3_input) INITIAL_PARAMETERS=225000704 ;;
     order3_output) INITIAL_PARAMETERS=224997120 ;;
-    *) echo "Expected order3_input or order3_output" >&2; exit 2 ;;
+    order3_paired) INITIAL_PARAMETERS=224999552 ;;
+    *) echo "Expected order3_input, order3_output, or order3_paired" >&2; exit 2 ;;
 esac
 
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"llama257m_tucker3_${TUCKER_MODE_LAYOUT}_late_225m_to_257m_customfb_bs16acc8_run1"}

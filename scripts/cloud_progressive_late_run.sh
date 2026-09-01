@@ -280,10 +280,10 @@ case "${MODE}" in
         export DOWNSTREAM_EVAL_ENABLED=0 LM_EVAL_ENABLED=0 WANDB_MODE=disabled
         ;;
     order3|smoke-order3)
-        TUCKER_MODE_LAYOUT=${2:?order3 mode requires order3_input or order3_output}
+        TUCKER_MODE_LAYOUT=${2:?order3 mode requires order3_input, order3_output, or order3_paired}
         case "${TUCKER_MODE_LAYOUT}" in
-            order3_input|order3_output) ;;
-            *) echo "Expected order3_input or order3_output" >&2; exit 2 ;;
+            order3_input|order3_output|order3_paired) ;;
+            *) echo "Expected order3_input, order3_output, or order3_paired" >&2; exit 2 ;;
         esac
         TUCKER_RANK_PLAN="${ROOT}/plans/${TUCKER_MODE_LAYOUT}-225m-rank8.json"
         python scripts/make_tucker_order3_rank_plan.py \
