@@ -9,6 +9,7 @@
 #   selftest   run the unit tests (the cheap --gpus cpu rehearsal)
 #   peek       print the newest log and the results recorded so far
 #   export     print one compact line per recorded point, for mlsub logs
+#   export-phases  print median forward/backward/optimizer CUDA timings
 #
 # A failed mlsub job shows no logs at all, so output is teed to the persistent
 # workspace disk and this script always exits zero.
@@ -75,6 +76,28 @@ for path in sorted(Path(sys.argv[1]).glob("*.json")):
 
 for (name, total_bytes), count in sorted(gpus.items()):
     print(f"GPU\t{name}\t{total_bytes}\t{count}")
+PY
+    exit 0
+fi
+
+if [ "${1:-}" = "export-phases" ]; then
+    python3 - "$RESULTS/results/runs" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+
+print("PH\tmodel\tvariant\tmicrobatch\tstatus\tforward_ms\tbackward_ms\toptimizer_ms")
+for path in sorted(Path(sys.argv[1]).glob("*.json")):
+    model, variant, batch = path.stem.split("-")
+    payload = json.loads(path.read_text())
+    row = [model, variant, batch.removeprefix("bs"), payload.get("status")]
+    if payload.get("status") == "complete":
+        summary = payload["summary"]
+        row += [f"{summary[name]['median']:.3f}" for name in ("forward_ms", "backward_ms", "optimizer_ms")]
+    else:
+        row += ["", "", ""]
+    print("PH\t" + "\t".join(str(field) for field in row))
 PY
     exit 0
 fi
