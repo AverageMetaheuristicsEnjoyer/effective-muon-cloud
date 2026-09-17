@@ -32,6 +32,11 @@ root = Path(sys.argv[1])
 for path in sorted(root.glob('*/*.json')):
     r = json.loads(path.read_text())
     print(str(path.relative_to(root)), r.get('status'), r.get('summary', {}).get('host_step_ms', {}).get('median'), r.get('error', '')[-600:])
+    if 'summary' in r:
+        print('PHASES', json.dumps({key: value['median'] for key, value in r['summary'].items()}), 'GPU', r.get('gpu'))
+for path in sorted(root.glob('*correctness.json')):
+    r = json.loads(path.read_text())
+    print('CORRECTNESS', path.name, r.get('status'))
 for path in sorted(root.glob('*.exit')):
     print('APPLICATION_EXIT', path.stem, path.read_text().strip())
 for path in sorted(root.glob('logs/*.log')):

@@ -83,6 +83,13 @@ def measure(args):
              tensors=len(group["params"]), lr=group["lr"], weight_decay=group["weight_decay"])
         for group in optimizer.param_groups
     ]
+    optimizer_parameter_counts = {}
+    for group in optimizer.param_groups:
+        for parameter in group["params"]:
+            update_type = group.get("update_type", args.optimizer)
+            if args.optimizer == "muon":
+                update_type = "adamw" if optimizer.state[parameter]["use_muon"] == 0 else "muon"
+            optimizer_parameter_counts[update_type] = optimizer_parameter_counts.get(update_type, 0) + parameter.numel()
     if args.compile_mode != "none":
         for index, block in enumerate(model.transformer.h):
             model.transformer.h[index] = torch.compile(
@@ -160,6 +167,20 @@ def measure(args):
     rows = [step(True) for _ in range(args.steps)]
     peak_allocated = torch.cuda.max_memory_allocated() if cuda else None
     peak_reserved = torch.cuda.max_memory_reserved() if cuda else None
+    geometry = None
+    if specs:
+        orthogonality, tangency = [], []
+        with torch.no_grad():
+            for _, _, factors in specs:
+                for factor in factors:
+                    identity = torch.eye(factor.shape[1], device=factor.device, dtype=factor.dtype)
+                    orthogonality.append((factor.T @ factor - identity).norm() / math.sqrt(factor.shape[1]))
+                    momentum = optimizer.state[factor]["momentum_buffer"]
+                    tangency.append((factor.T @ momentum + momentum.T @ factor).norm() / momentum.norm().clamp_min(1e-12))
+        geometry = dict(max_orthogonality_error=torch.stack(orthogonality).max().item(),
+                        max_momentum_tangency_error=torch.stack(tangency).max().item())
+        if not (geometry["max_orthogonality_error"] < 1e-4 and geometry["max_momentum_tangency_error"] < 1e-3):
+            raise RuntimeError(f"Riemannian geometry check failed: {geometry}")
     profile_rows = None
     if args.profile:
         with torch.profiler.profile(
@@ -188,6 +209,8 @@ def measure(args):
         profile=profile_rows,
         parameters=sum(p.numel() for p in model.parameters()),
         optimizer_parameter_groups=optimizer_parameter_groups,
+        optimizer_parameter_counts=optimizer_parameter_counts,
+        final_geometry=geometry,
         parameter_shapes={name: list(p.shape) for name, p in model.named_parameters()},
         initialization_ms=initialization_ms, initialization_peak_allocated_bytes=initialization_peak,
         peak_allocated_bytes=peak_allocated,

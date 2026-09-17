@@ -1,0 +1,16 @@
+{
+  "branch": "codex/layerwise-tucker-opt-20260917",
+  "jobs": [
+    {
+      "stage": "riemann-pilot",
+      "job": "lm-mpi-job-8051543d-8bc0-4bf7-98b9-970815b2e866",
+      "source_commit": "0089979738a66343d9efcd0ac7bd4a8a7de90e12",
+      "created_at_unix": 1789672239,
+      "result_root": "/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/pilot",
+      "planned_timing_runs": 8,
+      "planned_correctness_files": 2,
+      "gpu_count": 1,
+      "application_completion_verified": false
+    }
+  ]
+}
