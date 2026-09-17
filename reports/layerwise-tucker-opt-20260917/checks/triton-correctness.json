@@ -1,0 +1,75 @@
+{
+  "status": "complete",
+  "args": {
+    "compile_mode": "none",
+    "compile_scope": "blocks",
+    "liger": false,
+    "execution": "triton",
+    "output": "/workspace-SR006.nfs3/layerwise-tucker-opt-20260917/triton-correctness.json"
+  },
+  "rows": [
+    {
+      "variant": "dense",
+      "step": 0,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.0,
+      "max_parameter_relative_error": 0.0
+    },
+    {
+      "variant": "dense",
+      "step": 1,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.0,
+      "max_parameter_relative_error": 0.0
+    },
+    {
+      "variant": "dense",
+      "step": 2,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.0,
+      "max_parameter_relative_error": 0.0
+    },
+    {
+      "variant": "A",
+      "step": 0,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.03234347701072693,
+      "max_parameter_relative_error": 0.0011203682515770197
+    },
+    {
+      "variant": "A",
+      "step": 1,
+      "loss_relative_error": 0.0003080714668612927,
+      "max_parameter_gradient_relative_error": 0.011596070602536201,
+      "max_parameter_relative_error": 0.0012327588628977537
+    },
+    {
+      "variant": "A",
+      "step": 2,
+      "loss_relative_error": 0.0003118827298749238,
+      "max_parameter_gradient_relative_error": 0.01182539016008377,
+      "max_parameter_relative_error": 0.0012859945418313146
+    },
+    {
+      "variant": "B",
+      "step": 0,
+      "loss_relative_error": 0.00010026068048318848,
+      "max_parameter_gradient_relative_error": 0.009641836397349834,
+      "max_parameter_relative_error": 0.0005982983857393265
+    },
+    {
+      "variant": "B",
+      "step": 1,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.010657154023647308,
+      "max_parameter_relative_error": 0.0006538297748193145
+    },
+    {
+      "variant": "B",
+      "step": 2,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.019981682300567627,
+      "max_parameter_relative_error": 0.0006840568967163563
+    }
+  ]
+}

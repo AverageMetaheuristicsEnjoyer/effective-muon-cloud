@@ -1,0 +1,21 @@
+{
+  "status": "failed",
+  "args": {
+    "variant": "A",
+    "rank_fraction": 0.5,
+    "microbatch": 1,
+    "sequence_length": 1024,
+    "tokens_per_step": 16384,
+    "warmup": 5,
+    "steps": 20,
+    "seed": 42,
+    "device": "cuda",
+    "tiny": false,
+    "execution": "reordered",
+    "compile_mode": "reduce-overhead",
+    "liger": false,
+    "profile": false,
+    "output": "/workspace-SR006.nfs3/layerwise-tucker-opt-20260917/compile/A-r0.5-mb1-reduce-overhead.json"
+  },
+  "error": "Traceback (most recent call last):\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 182, in main\n    result = measure(args)\n             ^^^^^^^^^^^^^\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 121, in measure\n    warmup = [step(False) for _ in range(args.warmup)]\n              ^^^^^^^^^^^\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 87, in step\n    loss.backward()\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/_tensor.py\", line 647, in backward\n    torch.autograd.backward(\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/autograd/__init__.py\", line 354, in backward\n    _engine_run_backward(\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/autograd/graph.py\", line 829, in _engine_run_backward\n    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nRuntimeError: Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run. Stack trace: File \"/tmp/app.0/src/models/llama.py\", line 346, in forward\n    return self._non_fp8_forward(x, freqs_cis), None, None\n  File \"/tmp/app.0/src/models/llama.py\", line 223, in _non_fp8_forward\n    q, k, v, output_core = self.attn.project_qkv(self.ln_1(x))\n  File \"/tmp/app.0/src/models/llama.py\", line 95, in forward\n    return output * self.weight. To prevent overwriting, clone the tensor outside of torch.compile() or call torch.compiler.cudagraph_mark_step_begin() before each model invocation.\n"
+}

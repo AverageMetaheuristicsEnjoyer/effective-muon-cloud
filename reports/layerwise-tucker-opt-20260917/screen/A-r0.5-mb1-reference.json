@@ -1,0 +1,1210 @@
+{
+  "status": "complete",
+  "args": {
+    "variant": "A",
+    "rank_fraction": 0.5,
+    "microbatch": 1,
+    "sequence_length": 1024,
+    "tokens_per_step": 16384,
+    "warmup": 5,
+    "steps": 20,
+    "seed": 42,
+    "device": "cuda",
+    "tiny": false,
+    "execution": "reference",
+    "compile_mode": "none",
+    "liger": false,
+    "profile": false,
+    "output": "/workspace-SR006.nfs3/layerwise-tucker-opt-20260917/screen/A-r0.5-mb1-reference.json"
+  },
+  "config": {
+    "vocab_size": 50304,
+    "sequence_length": 1024,
+    "n_embd": 1024,
+    "n_head": 8,
+    "n_layer": 12,
+    "ffn_hidden_size": 2816,
+    "dropout": 0.0,
+    "init_std": 0.02,
+    "rmsnorm_eps": 1e-05,
+    "multiple_of": 256,
+    "dtype": "bfloat16",
+    "device": "cuda",
+    "liger_kernels": false,
+    "fp8": false,
+    "activation_checkpointing": false,
+    "layerwise_execution": "reference",
+    "layerwise_tucker_variant": "A",
+    "layerwise_attention_ranks": [
+      512,
+      64,
+      4
+    ],
+    "layerwise_mlp_ranks": [
+      1408,
+      512,
+      2
+    ]
+  },
+  "commit": "a19a327269371cc453a46b636f692ced8bef2236",
+  "torch": "2.8.0+cu128",
+  "cuda": "12.8",
+  "python": "3.12.12",
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223
+  ],
+  "profile": null,
+  "parameters": 255714544,
+  "parameter_shapes": {
+    "transformer.wte.weight": [
+      50304,
+      1024
+    ],
+    "transformer.h.0.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.0.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.0.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.0.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.0.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.0.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.0.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.0.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.0.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.0.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.0.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.0.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.0.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.1.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.1.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.1.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.1.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.1.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.1.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.1.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.1.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.1.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.1.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.1.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.1.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.1.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.2.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.2.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.2.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.2.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.2.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.2.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.2.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.2.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.2.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.2.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.2.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.2.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.2.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.3.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.3.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.3.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.3.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.3.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.3.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.3.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.3.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.3.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.3.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.3.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.3.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.3.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.4.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.4.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.4.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.4.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.4.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.4.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.4.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.4.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.4.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.4.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.4.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.4.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.4.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.5.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.5.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.5.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.5.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.5.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.5.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.5.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.5.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.5.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.5.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.5.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.5.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.5.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.6.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.6.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.6.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.6.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.6.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.6.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.6.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.6.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.6.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.6.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.6.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.6.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.6.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.7.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.7.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.7.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.7.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.7.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.7.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.7.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.7.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.7.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.7.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.7.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.7.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.7.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.8.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.8.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.8.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.8.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.8.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.8.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.8.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.8.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.8.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.8.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.8.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.8.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.8.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.9.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.9.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.9.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.9.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.9.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.9.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.9.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.9.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.9.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.9.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.9.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.9.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.9.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.10.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.10.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.10.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.10.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.10.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.10.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.10.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.10.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.10.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.10.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.10.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.10.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.10.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.h.11.ln_1.weight": [
+      1024
+    ],
+    "transformer.h.11.ln_2.weight": [
+      1024
+    ],
+    "transformer.h.11.attn.qkvo.hidden": [
+      1024,
+      512
+    ],
+    "transformer.h.11.attn.qkvo.head": [
+      128,
+      64
+    ],
+    "transformer.h.11.attn.qkvo.role": [
+      4,
+      4
+    ],
+    "transformer.h.11.attn.qkvo.core": [
+      512,
+      64,
+      4,
+      8
+    ],
+    "transformer.h.11.mlp.ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.11.mlp.model": [
+      1024,
+      512
+    ],
+    "transformer.h.11.mlp.role": [
+      2,
+      2
+    ],
+    "transformer.h.11.mlp.core": [
+      1408,
+      512,
+      2
+    ],
+    "transformer.h.11.mlp.down_out": [
+      1024,
+      512
+    ],
+    "transformer.h.11.mlp.down_ff": [
+      2816,
+      1408
+    ],
+    "transformer.h.11.mlp.down_core": [
+      512,
+      1408
+    ],
+    "transformer.ln_f.weight": [
+      1024
+    ],
+    "lm_head.weight": [
+      50304,
+      1024
+    ]
+  },
+  "initialization_ms": 254.87765669822693,
+  "initialization_peak_allocated_bytes": 1045413888,
+  "peak_allocated_bytes": 6135632896,
+  "peak_reserved_bytes": 6541017088,
+  "accumulation": 16,
+  "warmup": [
+    {
+      "host_step_ms": 1368.9153604209423,
+      "loss": 11.027259826660156
+    },
+    {
+      "host_step_ms": 850.4566848278046,
+      "loss": 10.753669738769531
+    },
+    {
+      "host_step_ms": 843.1989327073097,
+      "loss": 10.509464263916016
+    },
+    {
+      "host_step_ms": 846.8527942895889,
+      "loss": 10.305830001831055
+    },
+    {
+      "host_step_ms": 832.7975273132324,
+      "loss": 10.110071182250977
+    }
+  ],
+  "samples": [
+    {
+      "host_step_ms": 839.8728109896183,
+      "loss": 9.91574478149414,
+      "forward_ms": 313.2816963195801,
+      "backward_ms": 520.0263710021973,
+      "clip_ms": 2.3749759197235107,
+      "optimizer_ms": 3.094559907913208,
+      "zero_grad_ms": 0.002848000032827258,
+      "tokens_per_second": 19507.715675061332
+    },
+    {
+      "host_step_ms": 835.798118263483,
+      "loss": 9.714014053344727,
+      "forward_ms": 309.1634578704834,
+      "backward_ms": 519.9903945922852,
+      "clip_ms": 2.544095993041992,
+      "optimizer_ms": 3.0515520572662354,
+      "zero_grad_ms": 0.0030720001086592674,
+      "tokens_per_second": 19602.81991785364
+    },
+    {
+      "host_step_ms": 855.6240797042847,
+      "loss": 9.519840240478516,
+      "forward_ms": 323.01667404174805,
+      "backward_ms": 525.4083824157715,
+      "clip_ms": 2.521183967590332,
+      "optimizer_ms": 3.1552319526672363,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19148.596198534447
+    },
+    {
+      "host_step_ms": 838.017500936985,
+      "loss": 9.303747177124023,
+      "forward_ms": 311.63033866882324,
+      "backward_ms": 519.8448886871338,
+      "clip_ms": 2.5081920623779297,
+      "optimizer_ms": 3.04966402053833,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19550.90434469578
+    },
+    {
+      "host_step_ms": 851.8197275698185,
+      "loss": 9.079326629638672,
+      "forward_ms": 321.9141426086426,
+      "backward_ms": 523.3525772094727,
+      "clip_ms": 2.4687039852142334,
+      "optimizer_ms": 3.0401599407196045,
+      "zero_grad_ms": 0.002976000076159835,
+      "tokens_per_second": 19234.116644307353
+    },
+    {
+      "host_step_ms": 836.7009051144123,
+      "loss": 8.858434677124023,
+      "forward_ms": 308.54428482055664,
+      "backward_ms": 521.5975341796875,
+      "clip_ms": 2.5080320835113525,
+      "optimizer_ms": 3.092736005783081,
+      "zero_grad_ms": 0.002848000032827258,
+      "tokens_per_second": 19581.66878970881
+    },
+    {
+      "host_step_ms": 840.7653868198395,
+      "loss": 8.609577178955078,
+      "forward_ms": 312.7097568511963,
+      "backward_ms": 521.3866863250732,
+      "clip_ms": 2.526240110397339,
+      "optimizer_ms": 3.059839963912964,
+      "zero_grad_ms": 0.002848000032827258,
+      "tokens_per_second": 19487.005836398435
+    },
+    {
+      "host_step_ms": 842.3509784042835,
+      "loss": 8.387300491333008,
+      "forward_ms": 308.0151672363281,
+      "backward_ms": 527.6076164245605,
+      "clip_ms": 2.514591932296753,
+      "optimizer_ms": 3.1723520755767822,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19450.32465093969
+    },
+    {
+      "host_step_ms": 837.53277733922,
+      "loss": 8.159543991088867,
+      "forward_ms": 306.3859176635742,
+      "backward_ms": 524.6371574401855,
+      "clip_ms": 2.4783360958099365,
+      "optimizer_ms": 3.044703960418701,
+      "zero_grad_ms": 0.002848000032827258,
+      "tokens_per_second": 19562.219465667673
+    },
+    {
+      "host_step_ms": 839.044600725174,
+      "loss": 7.891744613647461,
+      "forward_ms": 308.1595859527588,
+      "backward_ms": 524.4874591827393,
+      "clip_ms": 2.3972160816192627,
+      "optimizer_ms": 3.015712022781372,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19526.971493338435
+    },
+    {
+      "host_step_ms": 840.3936289250851,
+      "loss": 7.642961502075195,
+      "forward_ms": 307.7544975280762,
+      "backward_ms": 525.8243541717529,
+      "clip_ms": 2.6287999153137207,
+      "optimizer_ms": 3.1857919692993164,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19495.62614004599
+    },
+    {
+      "host_step_ms": 841.6922837495804,
+      "loss": 7.397617340087891,
+      "forward_ms": 310.3001899719238,
+      "backward_ms": 524.6298580169678,
+      "clip_ms": 2.587264060974121,
+      "optimizer_ms": 3.050719976425171,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19465.546157810037
+    },
+    {
+      "host_step_ms": 838.9732427895069,
+      "loss": 7.14048957824707,
+      "forward_ms": 308.5869140625,
+      "backward_ms": 523.9553928375244,
+      "clip_ms": 2.4064319133758545,
+      "optimizer_ms": 3.0387840270996094,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19528.63233817177
+    },
+    {
+      "host_step_ms": 838.5740928351879,
+      "loss": 6.903509140014648,
+      "forward_ms": 306.3593292236328,
+      "backward_ms": 525.5906295776367,
+      "clip_ms": 2.58351993560791,
+      "optimizer_ms": 3.089247941970825,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19537.927703688416
+    },
+    {
+      "host_step_ms": 850.7706969976425,
+      "loss": 6.642632484436035,
+      "forward_ms": 319.6518077850342,
+      "backward_ms": 524.5633029937744,
+      "clip_ms": 2.4961280822753906,
+      "optimizer_ms": 3.084671974182129,
+      "zero_grad_ms": 0.002848000032827258,
+      "tokens_per_second": 19257.832995211164
+    },
+    {
+      "host_step_ms": 845.8542674779892,
+      "loss": 6.4381208419799805,
+      "forward_ms": 307.11498069763184,
+      "backward_ms": 532.141471862793,
+      "clip_ms": 2.5641279220581055,
+      "optimizer_ms": 3.0474560260772705,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19369.766908962654
+    },
+    {
+      "host_step_ms": 846.350185573101,
+      "loss": 6.192480087280273,
+      "forward_ms": 310.3032035827637,
+      "backward_ms": 529.3968658447266,
+      "clip_ms": 2.415872097015381,
+      "optimizer_ms": 3.116447925567627,
+      "zero_grad_ms": 0.002848000032827258,
+      "tokens_per_second": 19358.41721226264
+    },
+    {
+      "host_step_ms": 842.6293544471264,
+      "loss": 5.964594841003418,
+      "forward_ms": 306.59792137145996,
+      "backward_ms": 529.5637092590332,
+      "clip_ms": 2.4600958824157715,
+      "optimizer_ms": 3.044447898864746,
+      "zero_grad_ms": 0.0028800000436604023,
+      "tokens_per_second": 19443.898926058682
+    },
+    {
+      "host_step_ms": 847.6501405239105,
+      "loss": 5.73618221282959,
+      "forward_ms": 311.7921600341797,
+      "backward_ms": 529.1014404296875,
+      "clip_ms": 2.535775899887085,
+      "optimizer_ms": 3.1352639198303223,
+      "zero_grad_ms": 0.0029440000653266907,
+      "tokens_per_second": 19328.729173422274
+    },
+    {
+      "host_step_ms": 842.1736396849155,
+      "loss": 5.503133773803711,
+      "forward_ms": 306.373441696167,
+      "backward_ms": 528.5994567871094,
+      "clip_ms": 3.0775680541992188,
+      "optimizer_ms": 3.077280044555664,
+      "zero_grad_ms": 0.002848000032827258,
+      "tokens_per_second": 19454.420356982184
+    }
+  ],
+  "summary": {
+    "host_step_ms": {
+      "median": 841.2288352847099,
+      "mean": 842.6294209435582,
+      "min": 835.798118263483,
+      "max": 855.6240797042847
+    },
+    "loss": {
+      "median": 7.767353057861328,
+      "mean": 7.750049781799317,
+      "min": 5.503133773803711,
+      "max": 9.91574478149414
+    },
+    "forward_ms": {
+      "median": 308.8751859664917,
+      "mean": 310.882773399353,
+      "min": 306.3593292236328,
+      "max": 323.01667404174805
+    },
+    "backward_ms": {
+      "median": 524.6335077285767,
+      "mean": 525.0852774620056,
+      "min": 519.8448886871338,
+      "max": 532.141471862793
+    },
+    "clip_ms": {
+      "median": 2.5113919973373413,
+      "mean": 2.52985759973526,
+      "min": 2.3749759197235107,
+      "max": 3.0775680541992188
+    },
+    "optimizer_ms": {
+      "median": 3.068560004234314,
+      "mean": 3.0823311805725098,
+      "min": 3.015712022781372,
+      "max": 3.1857919692993164
+    },
+    "zero_grad_ms": {
+      "median": 0.0028800000436604023,
+      "mean": 0.0028864000458270313,
+      "min": 0.002848000032827258,
+      "max": 0.0030720001086592674
+    },
+    "tokens_per_second": {
+      "median": 19476.275997104236,
+      "mean": 19444.657046456072,
+      "min": 19148.596198534447,
+      "max": 19602.81991785364
+    }
+  }
+}
