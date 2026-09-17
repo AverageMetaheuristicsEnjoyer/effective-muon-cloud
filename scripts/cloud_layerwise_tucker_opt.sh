@@ -79,13 +79,11 @@ run() {
                 done
             done
         done
-    elif [ "$MODE" = compile ] || [ "$MODE" = compile-model ] || [ "$MODE" = compile-stable ]; then
-        scope=blocks
-        [ "$MODE" = compile-model ] && scope=model
+    elif [ "$MODE" = compile ] || [ "$MODE" = compile-stable ]; then
         extra=()
         [ "$MODE" = compile-stable ] && extra=(--stable-grad-buffers)
         for compiler in reduce-overhead max-autotune; do
-            python scripts/validate_layerwise_tucker_opt.py --compile-mode "$compiler" --compile-scope "$scope" \
+            python scripts/validate_layerwise_tucker_opt.py --compile-mode "$compiler" \
                 --layers 12 --accumulation 2 "${extra[@]}" \
                 --output "$RESULTS/$MODE-$compiler-correctness.json" || return $?
         done
@@ -96,7 +94,7 @@ run() {
                     name="$variant-r$fraction-mb$mb-$compiler"
                     echo "BEGIN $name"
                     timeout 900 python scripts/benchmark_layerwise_tucker.py --variant "$variant" --rank-fraction "$fraction" \
-                        --microbatch "$mb" --execution reordered --compile-mode "$compiler" --compile-scope "$scope" \
+                        --microbatch "$mb" --execution reordered --compile-mode "$compiler" \
                         "${extra[@]}" \
                         --output "$RESULTS/$MODE/$name.json" || status=1
                     echo "END $name"

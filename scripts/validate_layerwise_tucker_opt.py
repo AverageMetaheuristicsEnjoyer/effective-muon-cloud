@@ -18,7 +18,6 @@ def relative_error(actual, expected):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--compile-mode", default="none")
-    parser.add_argument("--compile-scope", choices=("blocks", "model"), default="blocks")
     parser.add_argument("--liger", action="store_true")
     parser.add_argument("--execution", default="reordered")
     parser.add_argument("--layers", type=int, default=2)
@@ -50,13 +49,10 @@ def main():
         reference_parameters = list(reference.parameters())
         optimized_parameters = list(optimized.parameters())
         if args.compile_mode != "none":
-            if args.compile_scope == "model":
-                optimized = torch.compile(optimized, fullgraph=True, dynamic=False, mode=args.compile_mode)
-            else:
-                for index, block in enumerate(optimized.transformer.h):
-                    optimized.transformer.h[index] = torch.compile(
-                        block, fullgraph=True, dynamic=False, mode=args.compile_mode,
-                    )
+            for index, block in enumerate(optimized.transformer.h):
+                optimized.transformer.h[index] = torch.compile(
+                    block, fullgraph=True, dynamic=False, mode=args.compile_mode,
+                )
         optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-4, fused=True) for m in (reference, optimized)]
         if args.stable_grad_buffers:
             for parameter in reference_parameters + optimized_parameters:
