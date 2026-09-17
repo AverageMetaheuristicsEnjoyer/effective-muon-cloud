@@ -92,6 +92,21 @@ run() {
                     --warmup 5 --steps 10 "${precision[@]}" --output "$RESULTS/$MODE/$name.json" || return $?
             done
         done
+    elif [ "$MODE" = riemann-cholesky ]; then
+        precision=()
+        [ "${2:-strict}" = tf32 ] && precision=(--tf32)
+        for fraction in 0.25 0.5; do
+            timeout 1200 python scripts/validate_layerwise_riemannian.py --rank-fraction "$fraction" \
+                --retraction cholesky "${precision[@]}" --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
+        done
+        for arm in A:0.5 B:0.25; do
+            variant=${arm%:*}; fraction=${arm#*:}
+            timeout 1200 python scripts/benchmark_layerwise_tucker.py --variant "$variant" \
+                --rank-fraction "$fraction" --optimizer riemannian --optimizer-implementation grouped \
+                --retraction-implementation cholesky --execution reordered --compile-mode max-autotune \
+                --microbatch 16 --warmup 5 --steps 10 "${precision[@]}" \
+                --output "$RESULTS/$MODE/$variant-r$fraction.json" || return $?
+        done
     elif [ "$MODE" = riemann-scaling ]; then
         width=2048
         [ "${2:-small}" = large ] && width=2560

@@ -46,7 +46,7 @@ def batched_mode_product(matrix, tensor, mode):
 
 
 @torch.no_grad()
-def retract_layerwise_grouped(specs, optimizer, batch_size=4):
+def retract_layerwise_grouped(specs, optimizer, batch_size=4, method="qr"):
     groups = defaultdict(list)
     for spec in specs:
         groups[(tuple(spec[1].shape), tuple(tuple(p.shape) for p in spec[2]))].append(spec)
@@ -61,10 +61,21 @@ def retract_layerwise_grouped(specs, optimizer, batch_size=4):
                 factors = [s[2][mode] for s in chunk]
                 buffers = [optimizer.state[p]["momentum_buffer"] for p in factors]
                 p, momentum = torch.stack(factors), torch.stack(buffers)
-                q, r = torch.linalg.qr(p, mode="reduced")
-                signs = torch.sign(r.diagonal(dim1=-2, dim2=-1))
-                signs = torch.where(signs == 0, 1, signs)
-                q, r = q * signs.unsqueeze(-2), r * signs.unsqueeze(-1)
+                if method == "cholesky":
+                    # Only use after updates from an orthonormal point. Keep
+                    # the Gram matrix in IEEE FP32, even in TF32 experiments.
+                    tf32 = torch.backends.cuda.matmul.allow_tf32
+                    torch.backends.cuda.matmul.allow_tf32 = False
+                    gram = p.mT @ p
+                    torch.backends.cuda.matmul.allow_tf32 = tf32
+                    lower, _ = torch.linalg.cholesky_ex(gram, check_errors=False)
+                    r = lower.mT
+                    q = torch.linalg.solve_triangular(lower, p.mT, upper=False).mT
+                else:
+                    q, r = torch.linalg.qr(p, mode="reduced")
+                    signs = torch.sign(r.diagonal(dim1=-2, dim2=-1))
+                    signs = torch.where(signs == 0, 1, signs)
+                    q, r = q * signs.unsqueeze(-2), r * signs.unsqueeze(-1)
                 cross = q.mT @ momentum
                 quotient = torch.linalg.solve_triangular(r.mT, cross.mT, upper=False).mT
                 lower = torch.tril(quotient, diagonal=-1)

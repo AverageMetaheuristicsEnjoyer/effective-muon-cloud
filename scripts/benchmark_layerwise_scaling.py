@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--riemannian", action="store_true")
     parser.add_argument("--tucker-implementation", choices=("reference", "grouped"), default="grouped")
-    parser.add_argument("--retraction-implementation", choices=("reference", "grouped"), default="grouped")
+    parser.add_argument("--retraction-implementation", choices=("reference", "grouped", "cholesky"), default="grouped")
     args = parser.parse_args()
     cases = []
     for profile in GROUPS[args.group]:

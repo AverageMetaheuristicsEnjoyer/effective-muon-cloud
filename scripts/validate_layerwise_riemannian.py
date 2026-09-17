@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--rank-fraction", type=float, default=0.25)
     parser.add_argument("--tf32", action="store_true")
+    parser.add_argument("--retraction", choices=("qr", "cholesky"), default="qr")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     torch.set_num_threads(4)
@@ -66,7 +67,7 @@ def main():
             go.step()
             if rs:
                 retract_layerwise_reference(rs, ro)
-                retract_layerwise_grouped(gs, go)
+                retract_layerwise_grouped(gs, go, method=args.retraction)
             parameter_errors, momentum_errors = [], []
             for a, b in zip(reference.parameters(), grouped.parameters()):
                 parameter_errors.append(relative_error(b, a))

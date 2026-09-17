@@ -47,7 +47,7 @@ class LayerwiseRiemannianTest(unittest.TestCase):
                     for factor in spec[2]:
                         torch.testing.assert_close(factor.T @ factor, torch.eye(factor.shape[1], dtype=factor.dtype), rtol=1e-10, atol=1e-12)
 
-    def test_grouped_updates_and_transport_match_reference(self):
+    def compare_grouped(self, method):
         for variant in ("A", "B"):
             reference = tiny_model(variant)
             retract_layerwise_reference(layerwise_tucker_specs(reference))
@@ -61,7 +61,7 @@ class LayerwiseRiemannianTest(unittest.TestCase):
                 ro.step()
                 go.step()
                 retract_layerwise_reference(rs, ro)
-                retract_layerwise_grouped(gs, go, batch_size=2)
+                retract_layerwise_grouped(gs, go, batch_size=2, method=method)
                 for a, b in zip(reference.parameters(), grouped.parameters()):
                     torch.testing.assert_close(b, a, rtol=1e-8, atol=1e-10)
                     for key, value in ro.state[a].items():
@@ -73,6 +73,12 @@ class LayerwiseRiemannianTest(unittest.TestCase):
                         torch.testing.assert_close(factor.T @ momentum + momentum.T @ factor,
                                                    torch.zeros(factor.shape[1], factor.shape[1], dtype=factor.dtype),
                                                    rtol=0, atol=1e-10)
+
+    def test_grouped_updates_and_transport_match_reference(self):
+        self.compare_grouped("qr")
+
+    def test_cholesky_updates_and_transport_match_reference(self):
+        self.compare_grouped("cholesky")
 
     def test_transport_is_gauge_map_differential(self):
         for variant in ("A", "B"):

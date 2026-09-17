@@ -134,8 +134,9 @@ def measure(args):
         if record and cuda:
             r.record()
         if args.optimizer == "riemannian":
-            if args.retraction_implementation == "grouped":
-                retract_layerwise_grouped(specs, optimizer, args.optimizer_batch_size)
+            if args.retraction_implementation != "reference":
+                retract_layerwise_grouped(specs, optimizer, args.optimizer_batch_size,
+                                          method="cholesky" if args.retraction_implementation == "cholesky" else "qr")
             else:
                 retract_layerwise_reference(specs, optimizer)
         if record and cuda:
@@ -239,7 +240,7 @@ def main():
     parser.add_argument("--ffn-hidden-size", type=int)
     parser.add_argument("--optimizer", choices=("adamw", "muon", "riemannian"), default="adamw")
     parser.add_argument("--optimizer-implementation", choices=("reference", "grouped"), default="reference")
-    parser.add_argument("--retraction-implementation", choices=("reference", "grouped"), default="reference")
+    parser.add_argument("--retraction-implementation", choices=("reference", "grouped", "cholesky"), default="reference")
     parser.add_argument("--optimizer-batch-size", type=int, default=4)
     parser.add_argument("--tf32", action="store_true")
     parser.add_argument("--execution", choices=("reference", "reordered", "triton", "triton-pointwise"), default="reference")
