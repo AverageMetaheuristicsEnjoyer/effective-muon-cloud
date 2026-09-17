@@ -1,0 +1,78 @@
+{
+  "status": "complete",
+  "args": {
+    "compile_mode": "reduce-overhead",
+    "compile_scope": "blocks",
+    "liger": false,
+    "execution": "reordered",
+    "layers": 12,
+    "accumulation": 2,
+    "stable_grad_buffers": true,
+    "output": "/workspace-SR006.nfs3/layerwise-tucker-opt-20260917/compile-stable-reduce-overhead-correctness.json"
+  },
+  "rows": [
+    {
+      "variant": "dense",
+      "step": 0,
+      "loss_relative_error": 0.00010083694360218942,
+      "max_parameter_gradient_relative_error": 0.011425700038671494,
+      "max_parameter_relative_error": 0.0024985952768474817
+    },
+    {
+      "variant": "dense",
+      "step": 1,
+      "loss_relative_error": 0.0002156450500478968,
+      "max_parameter_gradient_relative_error": 0.014832639135420322,
+      "max_parameter_relative_error": 0.002570083364844322
+    },
+    {
+      "variant": "dense",
+      "step": 2,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.021377498283982277,
+      "max_parameter_relative_error": 0.002623962936922908
+    },
+    {
+      "variant": "A",
+      "step": 0,
+      "loss_relative_error": 9.956192661775276e-05,
+      "max_parameter_gradient_relative_error": 0.027004895731806755,
+      "max_parameter_relative_error": 0.003136392217129469
+    },
+    {
+      "variant": "A",
+      "step": 1,
+      "loss_relative_error": 0.00010248001490253955,
+      "max_parameter_gradient_relative_error": 0.02000110037624836,
+      "max_parameter_relative_error": 0.003326241858303547
+    },
+    {
+      "variant": "A",
+      "step": 2,
+      "loss_relative_error": 0.00010458609904162586,
+      "max_parameter_gradient_relative_error": 0.021163253113627434,
+      "max_parameter_relative_error": 0.0034348866902291775
+    },
+    {
+      "variant": "B",
+      "step": 0,
+      "loss_relative_error": 0.0,
+      "max_parameter_gradient_relative_error": 0.048081330955028534,
+      "max_parameter_relative_error": 0.0006570391124114394
+    },
+    {
+      "variant": "B",
+      "step": 1,
+      "loss_relative_error": 0.00010289124475093558,
+      "max_parameter_gradient_relative_error": 0.01606832630932331,
+      "max_parameter_relative_error": 0.000691198103595525
+    },
+    {
+      "variant": "B",
+      "step": 2,
+      "loss_relative_error": 0.000210039914236404,
+      "max_parameter_gradient_relative_error": 0.02725444920361042,
+      "max_parameter_relative_error": 0.0007033328292891383
+    }
+  ]
+}

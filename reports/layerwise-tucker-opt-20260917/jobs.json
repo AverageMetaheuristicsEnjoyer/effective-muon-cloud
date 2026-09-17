@@ -1,0 +1,125 @@
+[
+  {
+    "stage": "screen",
+    "job_id": "lm-mpi-job-e254a568-9b7f-4cd3-8e9c-cd09ec5bd3ed",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 18,
+    "failed_results": 0,
+    "source_commits": [
+      "a19a327269371cc453a46b636f692ced8bef2236"
+    ]
+  },
+  {
+    "stage": "liger",
+    "job_id": "lm-mpi-job-c39dc8ba-70c5-41b5-a09e-20b362d979ad",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 10,
+    "failed_results": 0,
+    "source_commits": [
+      "59c65e83b0eab5c13958aef9702258d02b575ebe"
+    ]
+  },
+  {
+    "stage": "compile",
+    "job_id": "lm-mpi-job-88d05ccc-0eaa-4b72-ba57-ff0f01a1e408",
+    "status": "completed",
+    "application_exit": 1,
+    "complete_results": 6,
+    "failed_results": 6,
+    "source_commits": [
+      "59c65e83b0eab5c13958aef9702258d02b575ebe"
+    ]
+  },
+  {
+    "stage": "triton",
+    "job_id": "lm-mpi-job-3b7ac38b-5c27-4331-927f-28a76a8c07d0",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 12,
+    "failed_results": 0,
+    "source_commits": [
+      "e129aac1432d6db1d10addd1cd11fe91eda025c8"
+    ]
+  },
+  {
+    "stage": "compile-stable",
+    "job_id": "lm-mpi-job-39515927-2774-4b1c-bdf6-630683f436e0",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 12,
+    "failed_results": 0,
+    "source_commits": [
+      "94f1010842b1bdfd8bbd5f11b9072ac5715aa440"
+    ]
+  },
+  {
+    "stage": "combined",
+    "job_id": "lm-mpi-job-36aa8d49-9d5c-413f-a156-72c586d7e124",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 8,
+    "failed_results": 0,
+    "source_commits": [
+      "7bd6b82cb8a2bc9315425f92df939d8a7871709a"
+    ]
+  },
+  {
+    "stage": "combined-mb1",
+    "job_id": "lm-mpi-job-bac12042-b0f0-4157-8b76-252eb5f42caf",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 6,
+    "failed_results": 0,
+    "source_commits": [
+      "04394de598d4f0d1a94e2deadec67a619694a1f8"
+    ]
+  },
+  {
+    "stage": "confirm-mb1",
+    "job_id": "lm-mpi-job-f7d26d9b-885d-455b-8c6a-b5d75b91f9a4",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 18,
+    "failed_results": 0,
+    "source_commits": [
+      "784c2cb257bb1a94fdc113fb1955cdbd4d72c4ea"
+    ]
+  },
+  {
+    "stage": "confirm-mb16",
+    "job_id": "lm-mpi-job-89664e4d-1cba-49bb-a8b3-ca12ae2ee472",
+    "status": "completed",
+    "application_exit": 0,
+    "complete_results": 42,
+    "failed_results": 0,
+    "source_commits": [
+      "784c2cb257bb1a94fdc113fb1955cdbd4d72c4ea"
+    ]
+  },
+  {
+    "stage": "combined-initial-failed",
+    "job_id": "lm-mpi-job-c3a17753-cd51-48e2-8698-5f770f544f0d",
+    "status": "completed",
+    "application_exit": 1,
+    "source_revision": "311acf6",
+    "note": "Dynamo could not trace stored bound autograd apply; fixed before final combined stage."
+  },
+  {
+    "stage": "audit-quarter-pointwise",
+    "job_id": "lm-mpi-job-17084e9f-692f-47ac-8a62-a32803455ebd",
+    "status": "completed",
+    "application_exit": 0,
+    "source_revision": "760050d",
+    "artifact": "checks/audit-quarter-correctness.json"
+  },
+  {
+    "stage": "audit-quarter-reordered",
+    "job_id": "lm-mpi-job-7ecad1ea-eeeb-43a1-8b10-ba52cbe59e3c",
+    "status": "completed",
+    "application_exit": 0,
+    "source_revision": "47bf466",
+    "artifact": "checks/audit-quarter-reordered-correctness.json"
+  }
+]
