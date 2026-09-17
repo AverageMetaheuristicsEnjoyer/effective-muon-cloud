@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--execution", default="reordered")
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--accumulation", type=int, default=1)
+    parser.add_argument("--stable-grad-buffers", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     torch.manual_seed(11)
@@ -57,6 +58,9 @@ def main():
                         block, fullgraph=True, dynamic=False, mode=args.compile_mode,
                     )
         optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-4, fused=True) for m in (reference, optimized)]
+        if args.stable_grad_buffers:
+            for parameter in reference_parameters + optimized_parameters:
+                parameter.grad = torch.zeros_like(parameter)
         x = torch.randint(128, (2, 32), device="cuda")
         targets = torch.randint_like(x, 128)
         for step in range(3):
@@ -78,7 +82,7 @@ def main():
             assert max(errors) < 0.1, row
             for optimizer in optimizers:
                 optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=not args.stable_grad_buffers)
             row["max_parameter_relative_error"] = max(relative_error(b, a) for a, b in zip(reference_parameters, optimized_parameters))
             assert row["max_parameter_relative_error"] < 0.02, row
             rows.append(row)

@@ -66,6 +66,9 @@ def measure(args):
                     block, mode=args.compile_mode, dynamic=False, fullgraph=True,
                 )
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, fused=cuda)
+    if args.stable_grad_buffers:
+        for parameter in model.parameters():
+            parameter.grad = torch.zeros_like(parameter)
     generator = torch.Generator(device=args.device).manual_seed(20260917)
     x = torch.randint(config.vocab_size, (accumulation, args.microbatch, args.sequence_length),
                       generator=generator, device=args.device)
@@ -101,7 +104,7 @@ def measure(args):
         optimizer.step()
         if record and cuda:
             z.record()
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad(set_to_none=not args.stable_grad_buffers)
         if record and cuda:
             end.record()
         if cuda:
@@ -176,6 +179,7 @@ def main():
     parser.add_argument("--execution", choices=("reference", "reordered", "triton", "triton-pointwise"), default="reference")
     parser.add_argument("--compile-mode", choices=("none", "reduce-overhead", "max-autotune"), default="none")
     parser.add_argument("--compile-scope", choices=("blocks", "model"), default="blocks")
+    parser.add_argument("--stable-grad-buffers", action="store_true")
     parser.add_argument("--liger", action="store_true")
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--output", required=True)
