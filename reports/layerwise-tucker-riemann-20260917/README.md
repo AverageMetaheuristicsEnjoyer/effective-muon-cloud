@@ -1,5 +1,7 @@
 # Dense Muon versus layerwise Riemannian Tucker
 
+**Current result:** on the base 12x1024 geometry, B-quarter with grouped updates and Cholesky QR takes 109.78 ms/full step versus 193.61 ms for grouped dense Muon (1.76x throughput). A-half takes 368.92 ms and remains slower than dense. Same-job H100 controls, microbatch 16, 16384 tokens/step, strict FP32 optimizer math with TF32 off, one screening run per arm. No equal-quality claim. Two new one-GPU scaling jobs have been submitted for 150 attempts across five geometries and four microbatches; their results are not yet claimed complete.
+
 Requested primary comparison: dense + production vanilla Muon versus Tucker A/B + the prior Tensorion/Riemannian-Muon update, including QR retraction and differential momentum transport in every timed optimizer step. Not a comparison against the original eager Tucker implementation or an AdamW baseline. The earlier AdamW-only scaling jobs were cancelled; see the [submission audit](../layerwise-tucker-scale-20260917/README.md).
 
 ## Update semantics
@@ -42,3 +44,30 @@ GPU parity (both fractions, 3 identical-gradient updates): maximum parameter-ten
 - The scaling screen adds both original and grouped dense controls at every point, yielding 150 attempts (90 small-group, 60 large-group). The speedup denominator must use the faster successful dense implementation at the same geometry, batch and Liger policy, not the slower original dense. All scaling runs use 32768 tokens/step and must not be mixed with this 16384-token pilot.
 
 **TF32 pilot rejected by the numerical gate.** At the first A-quarter update, maximum momentum-tensor relative error was 0.0151046 (limit 0.003), parameter error 7.18e-5, BF16 logits error 0.006605. Application exit 1; no timing matrix ran. The failing parameter/stage was not isolated by this gate, so this does not establish that QR alone caused the error. Keep strict-FP32 comparisons separate; do not loosen the threshold or claim production-TF32 speedups from the strict results. The failure log is retained under `logs/`.
+
+## Selected Cholesky policy: same-job controls
+
+All five runs and both rank-fraction GPU gates complete with application exit 0. Same precision, batch, warmup and sample counts as the first pilot; optimizer grouping is enabled in every row below. A QR timing includes differential momentum transport. Dense has no retraction.
+
+| Arm | Householder QR full step, ms | Cholesky QR full step, ms | QR/transport: Householder -> Cholesky, ms | Selected time / dense |
+| --- | ---: | ---: | ---: | ---: |
+| Dense Muon | 193.61 | — | — | 1.000 |
+| A half | 660.02 | 368.92 | 410.57 -> 117.33 | 1.906 |
+| B quarter | 200.25 | 109.78 | 114.96 -> 24.50 | 0.567 |
+
+For B-quarter, this saves about 43.3% of full-step time relative to the same-job optimized dense and about 45.2% relative to its own grouped Householder implementation. A-half's own retraction optimization saves about 44.1% of full-step time but is not a win over dense. Parameter counts are dense 257188864, A-half 255714544, B-quarter 142812460: equal architecture dimensions, not equal parameter count or quality.
+
+Cholesky GPU parity across both ranks: maximum parameter relative error 2.06e-6, momentum relative error 2.87e-6. Full 12-layer runs finish with maximum factor orthogonality error below 9.86e-7 and momentum tangency error below 1.21e-6. These diagnostics are outside the timing and memory window. The combined CPU suite has ten passing tests, including finite-difference transport, MHA/GQA gauge invariance, optimizer/state parity and all scaling geometries.
+
+All 17 successful pilot/correctness JSON artifacts were exported from NFS, checksum-verified and stored under `strict-pilot/`, `cholesky-pilot/`, `checks/`; original-byte hashes are in `sha256.json`. Compiler caches and persisted logs remain on NFS. `jobs.json` records GPU job IDs, source revisions and application outcomes.
+
+## Scaling submissions
+
+Selected policy: reordered + blockwise max-autotune; grouped Tensorion/Riemannian Muon and Cholesky QR/transport, batch size 4 for optimizer grouping; TF32 off. Dense retains both production and grouped Muon controls. No automatic change of precision, batch or checkpointing after OOM.
+
+| Group | Dense-equivalent sizes | Timing attempts | Cloud job |
+| --- | --- | ---: | --- |
+| small | 257M (12x1024), 411M (24x1024), 823M (12x2048) | 90 | `lm-mpi-job-e2899b0e-b6c5-4aa9-af2b-7bc171e1f2e3` |
+| large | 1.439B (24x2048), 2.827B (32x2560) | 60 | `lm-mpi-job-eac45413-0fff-42a6-b3a4-8fbc676ab373` |
+
+Entrypoint arguments: `riemann-scaling small grouped cholesky` / `riemann-scaling large grouped cholesky`. Source: `20119e0d7e8741ecee012249f18e8026523fe06f`. Persistent roots: `/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/scale-small` and `scale-large`. Each starts with both-rank Cholesky parity gates at its largest width, then enumerates the matrix. Microbatch 1/4/16/32 means accumulation 32/8/2/1, sequence 1024 and 32768 tokens/step; 5 warmup + 20 timed steps, seed 42. Native kernels at all microbatches, matched Liger at microbatch 32. Per-run final geometry checks and explicit OOM/error outcomes are persisted. A launch/status is not successful completion; verify application exits and every expected result before reporting the full matrix.

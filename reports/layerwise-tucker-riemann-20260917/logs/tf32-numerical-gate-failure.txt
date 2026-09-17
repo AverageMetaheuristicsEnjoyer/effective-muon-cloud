@@ -1,0 +1,56 @@
+ 
+ℹ️ NODES INFO
+Nodes: bmsrv-024.sr006
+ 
+2026-09-17T19:25:31Z [1,0]<stdout>:LOG=/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/pilot-tf32/logs/riemann-pilot-20260917T192402-425.log
+2026-09-17T19:25:31Z [1,0]<stdout>:APPLICATION_EXIT=1
+2026-09-17T19:25:30Z [1,0]<stdout>:AssertionError: {'variant': 'A', 'step': 0, 'max_parameter_relative_error': 7.184269634308293e-05, 'max_momentum_relative_error': 0.015104632824659348, 'logits_relative_error': 0.006605252157896757}
+2026-09-17T19:25:30Z [1,0]<stdout>:           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-09-17T19:25:30Z [1,0]<stdout>:    assert row["max_momentum_relative_error"] < 0.003, row
+2026-09-17T19:25:30Z [1,0]<stdout>:  File "/tmp/app.0/scripts/validate_layerwise_riemannian.py", line 84, in main
+2026-09-17T19:25:30Z [1,0]<stdout>:    main()
+2026-09-17T19:25:30Z [1,0]<stdout>:  File "/tmp/app.0/scripts/validate_layerwise_riemannian.py", line 97, in <module>
+2026-09-17T19:25:30Z [1,0]<stdout>:Traceback (most recent call last):
+2026-09-17T19:25:29Z [1,0]<stdout>:{"variant": "dense", "step": 2, "max_parameter_relative_error": 6.58389490126865e-06, "max_momentum_relative_error": 0.0, "logits_relative_error": 0.004236462991684675}
+2026-09-17T19:25:29Z [1,0]<stdout>:{"variant": "dense", "step": 1, "max_parameter_relative_error": 4.997643827664433e-06, "max_momentum_relative_error": 0.0, "logits_relative_error": 0.004326027352362871}
+2026-09-17T19:25:29Z [1,0]<stdout>:{"variant": "dense", "step": 0, "max_parameter_relative_error": 3.1313629733631387e-06, "max_momentum_relative_error": 0.0, "logits_relative_error": 0.005112738348543644}
+2026-09-17T19:25:29Z [1,0]<stdout>:2026-09-17 19:25:29.265 | INFO     | third_party.lite.muonlite:__call__:70 - Newton-Schulz dynamic shape: (2, 1024, 2816)
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.829 | INFO     | third_party.lite.muonlite:__call__:70 - Newton-Schulz dynamic shape: (4, 2816, 1024)
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.380 | INFO     | third_party.lite.muonlite:__call__:70 - Newton-Schulz dynamic shape: (4, 1024, 1024)
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.364 | INFO     | third_party.lite.muonlite:step:462 - lm_head.weight, adamw, subspace=1.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.363 | INFO     | third_party.lite.muonlite:step:462 - transformer.ln_f.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.363 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.1.ln_2.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.362 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.1.ln_1.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.362 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.0.ln_2.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.362 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.0.ln_1.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.361 | INFO     | third_party.lite.muonlite:step:462 - transformer.wte.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.360 | INFO     | third_party.lite.muonlite:step:462 - lm_head.weight, adamw, subspace=1.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.360 | INFO     | third_party.lite.muonlite:step:462 - transformer.ln_f.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.360 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.1.ln_2.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.359 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.1.ln_1.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.359 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.0.ln_2.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.358 | INFO     | third_party.lite.muonlite:step:462 - transformer.h.0.ln_1.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.270 | INFO     | third_party.lite.muonlite:step:462 - transformer.wte.weight, adamw, subspace=0.0, lr_ratio=1.0
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.270 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.1.mlp.down_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.269 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.1.mlp.up_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.268 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.1.mlp.gate_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.267 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.1.attn.o_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.266 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.1.attn.v_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.265 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.1.attn.k_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.265 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.1.attn.q_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.263 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.0.mlp.down_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.045 | INFO     | third_party.lite.muonlite:__call__:70 - Newton-Schulz dynamic shape: (1024, 2816)
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.045 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.0.mlp.up_proj.weight, vanilla_muon
+2026-09-17T19:25:28Z [1,0]<stdout>:2026-09-17 19:25:28.043 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.0.mlp.gate_proj.weight, vanilla_muon
+2026-09-17T19:25:27Z [1,0]<stdout>:2026-09-17 19:25:27.759 | INFO     | third_party.lite.muonlite:__call__:70 - Newton-Schulz dynamic shape: (2816, 1024)
+2026-09-17T19:25:27Z [1,0]<stdout>:2026-09-17 19:25:27.758 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.0.attn.o_proj.weight, vanilla_muon
+2026-09-17T19:25:27Z [1,0]<stdout>:2026-09-17 19:25:27.757 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.0.attn.v_proj.weight, vanilla_muon
+2026-09-17T19:25:27Z [1,0]<stdout>:2026-09-17 19:25:27.757 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.0.attn.k_proj.weight, vanilla_muon
+2026-09-17T19:25:27Z [1,0]<stdout>:2026-09-17 19:25:27.755 | INFO     | third_party.lite.muonlite:step:435 - transformer.h.0.attn.q_proj.weight, vanilla_muon
+ 
+🤖 CLOUD.RU PLATFORM LOGS 🤖
+ 
+ 
+ℹ️ JOB INFO
+lm-mpi-job-78a00840-d5d2-4dd4-8204-8874f1428821
+Status: Completed

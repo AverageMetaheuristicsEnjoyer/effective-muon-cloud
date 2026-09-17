@@ -8,5 +8,12 @@
   "strict-pilot/B-r0.25-grouped-qr.json": "bc6735aee273f0b1905845de422248d1188ec1e9402aee27b65d0c85b386e844",
   "strict-pilot/A-r0.5-reference.json": "e50e66c238ecffc71557733ab74eb3e030f5cfd88bfcf8b33a1f97512f5070de",
   "strict-pilot/A-r0.5-grouped.json": "2482da871558be6302bbdece88f8e5f2341bfb1a8e4cc6e99960b65ffca27750",
-  "strict-pilot/A-r0.5-grouped-qr.json": "68fb02d00f1056564411c6a1870264e41e84a568f7a7adb6410ae98b7d548742"
+  "strict-pilot/A-r0.5-grouped-qr.json": "68fb02d00f1056564411c6a1870264e41e84a568f7a7adb6410ae98b7d548742",
+  "checks/riemann-cholesky-r0.5-correctness.json": "55d7408200b7d5d08c4ca99239dedc44d1b44be71777474c622078aace484c15",
+  "checks/riemann-cholesky-r0.25-correctness.json": "b9aec8faaae565989a5c5c6dcff7e3d58ab244af3794db9968eefccf0142e9d0",
+  "cholesky-pilot/dense-r0.5-grouped.json": "881c0fc2612888792f60f8a2de50477998368e3775843f3d81f46fab397fb491",
+  "cholesky-pilot/B-r0.25-grouped.json": "4544c5449b51293238f90fd1ebc32e9467d3db125c4a4f630bbdfa0f2e786e3a",
+  "cholesky-pilot/B-r0.25-cholesky.json": "18821b3ce6cfc7ad6e88eea99b90af1139bd3c9c0ef4c1aa859de03443305ff0",
+  "cholesky-pilot/A-r0.5-grouped.json": "058a14b6da6827bd243f8c42a2c9d3ba138677bc6e82c70cc7ad7032edc20fcb",
+  "cholesky-pilot/A-r0.5-cholesky.json": "239760e588439f730065b8a328331bb4fd47a2fccd95b30d766d71bea3500284"
 }

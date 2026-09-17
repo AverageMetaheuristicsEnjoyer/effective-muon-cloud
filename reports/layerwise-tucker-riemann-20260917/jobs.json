@@ -39,6 +39,35 @@
       "planned_timing_runs": 5,
       "planned_correctness_files": 2,
       "gpu_count": 1,
+      "application_completion_verified": true,
+      "application_exit": 0,
+      "completed_timing_runs": 5,
+      "completed_at_unix": 1789673380
+    },
+    {
+      "stage": "riemann-scaling-small",
+      "job": "lm-mpi-job-e2899b0e-b6c5-4aa9-af2b-7bc171e1f2e3",
+      "source_commit": "20119e0d7e8741ecee012249f18e8026523fe06f",
+      "created_at_unix": 1789673551,
+      "result_root": "/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/scale-small",
+      "planned_timing_runs": 90,
+      "gpu_count": 1,
+      "args": "riemann-scaling small grouped cholesky",
+      "last_observed_platform_status": "running",
+      "running_at_unix": 1789673588,
+      "application_completion_verified": false
+    },
+    {
+      "stage": "riemann-scaling-large",
+      "job": "lm-mpi-job-eac45413-0fff-42a6-b3a4-8fbc676ab373",
+      "source_commit": "20119e0d7e8741ecee012249f18e8026523fe06f",
+      "created_at_unix": 1789673551,
+      "result_root": "/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/scale-large",
+      "planned_timing_runs": 60,
+      "gpu_count": 1,
+      "args": "riemann-scaling large grouped cholesky",
+      "last_observed_platform_status": "running",
+      "running_at_unix": 1789673605,
       "application_completion_verified": false
     }
   ]
