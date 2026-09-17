@@ -30,6 +30,8 @@ root = Path(sys.argv[1])
 for path in sorted(root.glob('*/*.json')):
     r = json.loads(path.read_text())
     print(str(path.relative_to(root)), r.get('status'), r.get('summary', {}).get('host_step_ms', {}).get('median'), r.get('error', '')[-600:])
+for path in sorted(root.glob('*.exit')):
+    print('APPLICATION_EXIT', path.stem, path.read_text().strip())
 for path in sorted(root.glob('logs/*.log')):
     print(str(path), '\n'.join(path.read_text().splitlines()[-8:]))
 PY

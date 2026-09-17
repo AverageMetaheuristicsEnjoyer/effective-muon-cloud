@@ -149,6 +149,7 @@ def measure(args):
         status="complete", args=vars(args), config=vars(config),
         commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         torch=torch.__version__, cuda=torch.version.cuda, python=platform.python_version(),
+        hostname=platform.node(),
         gpu=torch.cuda.get_device_name() if cuda else None,
         cpu_affinity=sorted(os.sched_getaffinity(0)),
         profile=profile_rows,
