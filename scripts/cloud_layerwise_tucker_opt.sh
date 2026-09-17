@@ -156,20 +156,30 @@ run() {
         fi
         extra=()
         [ "$kernels" = liger ] && extra=(--liger)
+        executions=(reordered triton-pointwise)
+        [ "$mb" = 1 ] && executions=(reordered)
         for fraction in 0.25 0.5; do
-            timeout 900 python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune \
-                --execution reordered --layers 12 --accumulation "$accumulation" --rank-fraction "$fraction" \
-                "${stable[@]}" "${extra[@]}" --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
+            for execution in "${executions[@]}"; do
+                timeout 900 python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune \
+                    --execution "$execution" --layers 12 --accumulation "$accumulation" --rank-fraction "$fraction" \
+                    "${stable[@]}" "${extra[@]}" --output "$RESULTS/$MODE-r$fraction-$execution-correctness.json" || return $?
+            done
         done
         for seed in 42 43 44; do
             policies=(reference optimized)
-            [ "$seed" = 43 ] && policies=(optimized reference)
+            [ "$mb" = 16 ] && policies+=(pointwise)
+            if [ "$seed" = 43 ]; then
+                policies=(optimized reference)
+                [ "$mb" = 16 ] && policies=(pointwise optimized reference)
+            fi
             for arm in "${arms[@]}"; do
                 variant=${arm%:*}; fraction=${arm#*:}
                 for policy in "${policies[@]}"; do
+                    [ "$variant" = dense ] && [ "$policy" = pointwise ] && continue
                     options=(--execution reference)
-                    if [ "$policy" = optimized ]; then
+                    if [ "$policy" != reference ]; then
                         options=(--execution reordered --compile-mode max-autotune "${stable[@]}" "${extra[@]}")
+                        [ "$policy" = pointwise ] && options+=(--execution triton-pointwise)
                     fi
                     name="$variant-r$fraction-mb$mb-s$seed-$policy"
                     echo "BEGIN $name"
