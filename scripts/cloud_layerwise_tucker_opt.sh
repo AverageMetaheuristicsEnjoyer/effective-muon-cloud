@@ -99,13 +99,18 @@ run() {
             timeout 1200 python scripts/validate_layerwise_riemannian.py --rank-fraction "$fraction" \
                 --retraction cholesky "${precision[@]}" --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
         done
-        for arm in A:0.5 B:0.25; do
+        for arm in dense:0.5 A:0.5 B:0.25; do
             variant=${arm%:*}; fraction=${arm#*:}
-            timeout 1200 python scripts/benchmark_layerwise_tucker.py --variant "$variant" \
-                --rank-fraction "$fraction" --optimizer riemannian --optimizer-implementation grouped \
-                --retraction-implementation cholesky --execution reordered --compile-mode max-autotune \
-                --microbatch 16 --warmup 5 --steps 10 "${precision[@]}" \
-                --output "$RESULTS/$MODE/$variant-r$fraction.json" || return $?
+            optimizer=riemannian
+            [ "$variant" = dense ] && optimizer=muon
+            for retraction in grouped cholesky; do
+                [ "$variant" = dense ] && [ "$retraction" = cholesky ] && continue
+                timeout 1200 python scripts/benchmark_layerwise_tucker.py --variant "$variant" \
+                    --rank-fraction "$fraction" --optimizer "$optimizer" --optimizer-implementation grouped \
+                    --retraction-implementation "$retraction" --execution reordered --compile-mode max-autotune \
+                    --microbatch 16 --warmup 5 --steps 10 "${precision[@]}" \
+                    --output "$RESULTS/$MODE/$variant-r$fraction-$retraction.json" || return $?
+            done
         done
     elif [ "$MODE" = riemann-scaling ]; then
         width=2048
