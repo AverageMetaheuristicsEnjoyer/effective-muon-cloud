@@ -4,11 +4,20 @@ RESULTS=${LAYERWISE_OPT_RESULTS:-/workspace-SR006.nfs3/layerwise-tucker-opt-2026
 MODE=${1:-screen}
 if [ "$MODE" = export ]; then
     python3 - "$RESULTS" "${2:-screen}" <<'PY'
-import json
+import base64
+import gzip
+import hashlib
 import sys
 from pathlib import Path
-for path in sorted((Path(sys.argv[1]) / sys.argv[2]).glob('*.json')):
-    print('RESULT_JSON ' + json.dumps({'file': path.name, 'result': json.loads(path.read_text())}))
+root = Path(sys.argv[1])
+paths = sorted(root.glob('*correctness.json')) + sorted(root.glob('*micro.json')) if sys.argv[2] == 'checks' else sorted((root / sys.argv[2]).glob('*.json'))
+for path in paths:
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    encoded = base64.b64encode(gzip.compress(raw)).decode()
+    chunks = [encoded[i:i+800] for i in range(0, len(encoded), 800)]
+    for index, chunk in enumerate(chunks):
+        print(f'RESULT_CHUNK {path.name} {index} {len(chunks)} {digest} {chunk}', flush=True)
 PY
     exit $?
 fi
