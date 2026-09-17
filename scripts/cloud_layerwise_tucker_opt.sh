@@ -101,6 +101,25 @@ run() {
                 echo "END $name"
             done
         done
+    elif [ "$MODE" = triton ]; then
+        python scripts/benchmark_layerwise_triton.py --output "$RESULTS/triton-micro.json" || return $?
+        for execution in triton-pointwise triton; do
+            python scripts/validate_layerwise_tucker_opt.py --execution "$execution" \
+                --output "$RESULTS/$execution-correctness.json" || return $?
+        done
+        for mb in 1 16; do
+            for arm in A:0.5 B:0.25; do
+                variant=${arm%:*}; fraction=${arm#*:}
+                for execution in reordered triton-pointwise triton; do
+                    name="$variant-r$fraction-mb$mb-$execution"
+                    echo "BEGIN $name"
+                    python scripts/benchmark_layerwise_tucker.py --variant "$variant" --rank-fraction "$fraction" \
+                        --microbatch "$mb" --execution "$execution" \
+                        --output "$RESULTS/$MODE/$name.json" || status=1
+                    echo "END $name"
+                done
+            done
+        done
     else
         echo "Unknown mode: $MODE"
         return 2

@@ -19,6 +19,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--compile-mode", default="none")
     parser.add_argument("--liger", action="store_true")
+    parser.add_argument("--execution", default="reordered")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     torch.manual_seed(11)
@@ -38,7 +39,7 @@ def main():
         )
         reference = Llama(config).cuda().train()
         optimized_config = SimpleNamespace(**vars(config))
-        optimized_config.layerwise_execution = "reordered"
+        optimized_config.layerwise_execution = args.execution
         optimized_config.liger_kernels = args.liger
         optimized = Llama(optimized_config).cuda().train()
         optimized.load_state_dict(reference.state_dict())

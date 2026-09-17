@@ -170,7 +170,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--tiny", action="store_true")
-    parser.add_argument("--execution", choices=("reference", "reordered"), default="reference")
+    parser.add_argument("--execution", choices=("reference", "reordered", "triton", "triton-pointwise"), default="reference")
     parser.add_argument("--compile-mode", choices=("none", "reduce-overhead", "max-autotune"), default="none")
     parser.add_argument("--liger", action="store_true")
     parser.add_argument("--profile", action="store_true")

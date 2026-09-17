@@ -70,6 +70,10 @@ class LayerwiseTuckerMLP(nn.Module):
         self.variant = variant
         self.execution = execution
         self.use_liger = use_liger
+        if execution in ("triton", "triton-pointwise"):
+            from models.layerwise_tucker_triton import gate_up_swiglu, packed_swiglu
+            self.gate_up_swiglu = gate_up_swiglu
+            self.packed_swiglu = packed_swiglu
         if use_liger:
             from liger_kernel.ops import LigerSiLUMulFunction
             self.silu_mul = LigerSiLUMulFunction.apply
@@ -97,10 +101,18 @@ class LayerwiseTuckerMLP(nn.Module):
         else:
             # Contract weights before tokens; these are [role, ff, rank_model].
             projected = self.ff @ cores
-            gu = F.linear(x @ self.model, projected[:2].flatten(0, 1))
-            gu = gu.unflatten(-1, (2, self.ff.shape[0]))
-        gate, up = gu.unbind(dim=-2)
-        h = self.silu_mul(gate, up) if self.use_liger else F.silu(gate) * up
+            latent = x @ self.model
+            if self.execution == "triton":
+                h = self.gate_up_swiglu(latent, projected[:2].flatten(0, 1))
+            else:
+                gu = F.linear(latent, projected[:2].flatten(0, 1))
+                if self.execution == "triton-pointwise":
+                    h = self.packed_swiglu(gu)
+                else:
+                    gu = gu.unflatten(-1, (2, self.ff.shape[0]))
+        if self.execution not in ("triton", "triton-pointwise"):
+            gate, up = gu.unbind(dim=-2)
+            h = self.silu_mul(gate, up) if self.use_liger else F.silu(gate) * up
         if self.execution != "reference":
             if self.variant == "A":
                 down = self.down_ff @ self.down_core.T
