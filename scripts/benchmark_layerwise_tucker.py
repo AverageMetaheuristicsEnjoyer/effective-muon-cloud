@@ -91,7 +91,7 @@ def measure(args):
             if record and cuda:
                 e.record()
                 events.append((f, b, e))
-            losses.append(loss.detach())
+            losses.append(loss.detach().clone())
         if record and cuda:
             c, o, z, end = [torch.cuda.Event(enable_timing=True) for _ in range(4)]
             c.record()
