@@ -50,7 +50,7 @@ run() {
     git rev-parse HEAD
     df -h "$RESULTS"
     df -i "$RESULTS"
-    python -m pip install --disable-pip-version-check --target /tmp/layerwise-opt-deps tiktoken || return $?
+    python -m pip install --disable-pip-version-check --target /tmp/layerwise-opt-deps tiktoken loguru || return $?
     python -m pip install --disable-pip-version-check --no-deps --target /tmp/layerwise-opt-deps liger-kernel==0.8.1 || return $?
     python -m unittest discover -s tests -p 'test_layerwise*.py' -v || return $?
     if [ "$MODE" = selftest ]; then
@@ -63,7 +63,29 @@ run() {
     fi
     nvidia-smi || return $?
     status=0
-    if [ "$MODE" = scaling ]; then
+    if [ "$MODE" = riemann-pilot ]; then
+        for fraction in 0.25 0.5; do
+            timeout 1200 python scripts/validate_layerwise_riemannian.py --rank-fraction "$fraction" \
+                --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
+        done
+        for arm in dense:0.5 A:0.5 B:0.25; do
+            variant=${arm%:*}; fraction=${arm#*:}
+            optimizer=riemannian
+            [ "$variant" = dense ] && optimizer=muon
+            for policy in reference grouped grouped-qr; do
+                [ "$variant" = dense ] && [ "$policy" = grouped-qr ] && continue
+                implementation=reference; retraction=reference
+                [ "$policy" != reference ] && implementation=grouped
+                [ "$policy" = grouped-qr ] && retraction=grouped
+                name="$variant-r$fraction-$policy"
+                timeout 1200 python scripts/benchmark_layerwise_tucker.py --variant "$variant" \
+                    --rank-fraction "$fraction" --optimizer "$optimizer" \
+                    --optimizer-implementation "$implementation" --retraction-implementation "$retraction" \
+                    --execution reordered --compile-mode max-autotune --microbatch 16 \
+                    --warmup 5 --steps 10 --output "$RESULTS/$MODE/$name.json" || return $?
+            done
+        done
+    elif [ "$MODE" = scaling ]; then
         width=2048; heads=16; ff=5632
         if [ "${2:-small}" = large ]; then
             width=2560; heads=20; ff=7040

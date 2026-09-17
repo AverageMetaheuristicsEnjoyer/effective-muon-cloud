@@ -15,6 +15,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 from models.llama import Llama
 
 
@@ -59,16 +60,34 @@ def measure(args):
     start = time.perf_counter()
     with torch.device(args.device):
         model = Llama(config).train()
+    specs = []
+    if args.optimizer == "riemannian":
+        from optim.layerwise_riemannian import layerwise_tucker_specs, retract_layerwise_reference
+        specs = layerwise_tucker_specs(model)
+        retract_layerwise_reference(specs)
     if cuda:
         torch.cuda.synchronize()
     initialization_ms = 1000 * (time.perf_counter() - start)
     initialization_peak = torch.cuda.max_memory_allocated() if cuda else None
+    if args.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, fused=cuda)
+    elif args.optimizer == "muon":
+        from optim.layerwise_muon import make_dense_muon
+        optimizer = make_dense_muon(model, args.optimizer_implementation, args.optimizer_batch_size)
+    else:
+        from optim.layerwise_riemannian import make_layerwise_riemannian, retract_layerwise_grouped
+        optimizer, specs = make_layerwise_riemannian(model, args.optimizer_implementation, args.optimizer_batch_size)
+    optimizer_parameter_groups = [
+        dict(update_type=group.get("update_type", args.optimizer),
+             parameters=sum(p.numel() for p in group["params"]),
+             tensors=len(group["params"]), lr=group["lr"], weight_decay=group["weight_decay"])
+        for group in optimizer.param_groups
+    ]
     if args.compile_mode != "none":
         for index, block in enumerate(model.transformer.h):
             model.transformer.h[index] = torch.compile(
                 block, mode=args.compile_mode, dynamic=False, fullgraph=True,
             )
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, fused=cuda)
     if args.stable_grad_buffers:
         for parameter in model.parameters():
             parameter.grad = torch.zeros_like(parameter)
@@ -99,12 +118,19 @@ def measure(args):
                 events.append((f, b, e))
             losses.append(loss.detach().clone())
         if record and cuda:
-            c, o, z, end = [torch.cuda.Event(enable_timing=True) for _ in range(4)]
+            c, o, r, z, end = [torch.cuda.Event(enable_timing=True) for _ in range(5)]
             c.record()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         if record and cuda:
             o.record()
         optimizer.step()
+        if record and cuda:
+            r.record()
+        if args.optimizer == "riemannian":
+            if args.retraction_implementation == "grouped":
+                retract_layerwise_grouped(specs, optimizer, args.optimizer_batch_size)
+            else:
+                retract_layerwise_reference(specs, optimizer)
         if record and cuda:
             z.record()
         optimizer.zero_grad(set_to_none=not args.stable_grad_buffers)
@@ -121,7 +147,8 @@ def measure(args):
             result.update(
                 forward_ms=sum(f.elapsed_time(b) for f, b, _ in events),
                 backward_ms=sum(b.elapsed_time(e) for _, b, e in events),
-                clip_ms=c.elapsed_time(o), optimizer_ms=o.elapsed_time(z),
+                clip_ms=c.elapsed_time(o), optimizer_ms=o.elapsed_time(r),
+                retraction_transport_ms=r.elapsed_time(z),
                 zero_grad_ms=z.elapsed_time(end),
                 tokens_per_second=args.tokens_per_step / (host_ms / 1000),
             )
@@ -160,6 +187,7 @@ def measure(args):
         cpu_affinity=sorted(os.sched_getaffinity(0)),
         profile=profile_rows,
         parameters=sum(p.numel() for p in model.parameters()),
+        optimizer_parameter_groups=optimizer_parameter_groups,
         parameter_shapes={name: list(p.shape) for name, p in model.named_parameters()},
         initialization_ms=initialization_ms, initialization_peak_allocated_bytes=initialization_peak,
         peak_allocated_bytes=peak_allocated,
@@ -184,6 +212,10 @@ def main():
     parser.add_argument("--width", type=int)
     parser.add_argument("--heads", type=int)
     parser.add_argument("--ffn-hidden-size", type=int)
+    parser.add_argument("--optimizer", choices=("adamw", "muon", "riemannian"), default="adamw")
+    parser.add_argument("--optimizer-implementation", choices=("reference", "grouped"), default="reference")
+    parser.add_argument("--retraction-implementation", choices=("reference", "grouped"), default="reference")
+    parser.add_argument("--optimizer-batch-size", type=int, default=4)
     parser.add_argument("--execution", choices=("reference", "reordered", "triton", "triton-pointwise"), default="reference")
     parser.add_argument("--compile-mode", choices=("none", "reduce-overhead", "max-autotune"), default="none")
     parser.add_argument("--stable-grad-buffers", action="store_true")
@@ -191,6 +223,12 @@ def main():
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    if args.optimizer == "muon" and args.variant != "dense":
+        parser.error("muon is the dense control; use riemannian for Tucker")
+    if args.optimizer == "riemannian" and args.variant == "dense":
+        parser.error("riemannian requires Tucker A or B")
+    if args.optimizer_batch_size < 1:
+        parser.error("optimizer-batch-size must be positive")
     if min(args.microbatch, args.sequence_length, args.tokens_per_step, args.warmup, args.steps) <= 0:
         parser.error("batch, sequence, tokens, warmup and steps must be positive")
     try:
