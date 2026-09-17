@@ -116,6 +116,27 @@ run() {
                 echo "END $name"
             done
         done
+    elif [ "$MODE" = combined ]; then
+        for execution in reordered triton-pointwise; do
+            python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune --liger \
+                --execution "$execution" --layers 12 \
+                --output "$RESULTS/combined-$execution-correctness.json" || return $?
+        done
+        for arm in dense:0.5 A:0.5 B:0.25; do
+            variant=${arm%:*}; fraction=${arm#*:}
+            for kernels in native liger liger-pointwise; do
+                [ "$variant" = dense ] && [ "$kernels" = liger-pointwise ] && continue
+                extra=(); execution=reordered
+                [ "$kernels" != native ] && extra=(--liger)
+                [ "$kernels" = liger-pointwise ] && execution=triton-pointwise
+                name="$variant-r$fraction-mb16-$kernels"
+                echo "BEGIN $name"
+                timeout 900 python scripts/benchmark_layerwise_tucker.py --variant "$variant" --rank-fraction "$fraction" \
+                    --microbatch 16 --execution "$execution" --compile-mode max-autotune "${extra[@]}" \
+                    --output "$RESULTS/$MODE/$name.json" || status=1
+                echo "END $name"
+            done
+        done
     elif [ "$MODE" = triton ]; then
         python scripts/benchmark_layerwise_triton.py --output "$RESULTS/triton-micro.json" || return $?
         for execution in triton-pointwise triton; do
