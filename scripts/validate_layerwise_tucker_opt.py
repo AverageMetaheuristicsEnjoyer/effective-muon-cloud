@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--accumulation", type=int, default=1)
     parser.add_argument("--stable-grad-buffers", action="store_true")
+    parser.add_argument("--rank-fraction", type=float, choices=(0.25, 0.5), default=0.5)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     torch.manual_seed(11)
@@ -36,8 +37,8 @@ def main():
             multiple_of=32, dtype="bfloat16", device="cuda", liger_kernels=False,
             liger_bf16_residual=False,
             layerwise_tucker_variant=None if variant == "dense" else variant,
-            layerwise_attention_ranks=(64, 16, 4),
-            layerwise_mlp_ranks=(176, 64, 2 if variant == "A" else 3),
+            layerwise_attention_ranks=(int(128 * args.rank_fraction), int(32 * args.rank_fraction), 4),
+            layerwise_mlp_ranks=(int(352 * args.rank_fraction), int(128 * args.rank_fraction), 2 if variant == "A" else 3),
             layerwise_execution="reference",
         )
         reference = Llama(config).cuda().train()

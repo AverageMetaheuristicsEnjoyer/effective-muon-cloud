@@ -140,6 +140,44 @@ run() {
                 echo "END $name"
             done
         done
+    elif [ "$MODE" = confirm-mb16 ] || [ "$MODE" = confirm-mb1 ]; then
+        kernels=${2:-native}
+        if [ "$kernels" != native ] && [ "$kernels" != liger ]; then
+            echo "Expected native or liger confirmation kernels"
+            return 2
+        fi
+        mb=16; accumulation=1; stable=()
+        arms=(dense:0.5 A:0.25 B:0.25 A:0.5 B:0.5)
+        if [ "$MODE" = confirm-mb1 ]; then
+            mb=1; accumulation=2; stable=(--stable-grad-buffers)
+            arms=(dense:0.5 A:0.5 B:0.25)
+        fi
+        extra=()
+        [ "$kernels" = liger ] && extra=(--liger)
+        for fraction in 0.25 0.5; do
+            timeout 900 python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune \
+                --execution reordered --layers 12 --accumulation "$accumulation" --rank-fraction "$fraction" \
+                "${stable[@]}" "${extra[@]}" --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
+        done
+        for seed in 42 43 44; do
+            policies=(reference optimized)
+            [ "$seed" = 43 ] && policies=(optimized reference)
+            for arm in "${arms[@]}"; do
+                variant=${arm%:*}; fraction=${arm#*:}
+                for policy in "${policies[@]}"; do
+                    options=(--execution reference)
+                    if [ "$policy" = optimized ]; then
+                        options=(--execution reordered --compile-mode max-autotune "${stable[@]}" "${extra[@]}")
+                    fi
+                    name="$variant-r$fraction-mb$mb-s$seed-$policy"
+                    echo "BEGIN $name"
+                    timeout 900 python scripts/benchmark_layerwise_tucker.py --variant "$variant" --rank-fraction "$fraction" \
+                        --microbatch "$mb" --seed "$seed" "${options[@]}" \
+                        --output "$RESULTS/$MODE/$name.json" || return $?
+                    echo "END $name"
+                done
+            done
+        done
     elif [ "$MODE" = triton ]; then
         python scripts/benchmark_layerwise_triton.py --output "$RESULTS/triton-micro.json" || return $?
         for execution in triton-pointwise triton; do
@@ -165,7 +203,7 @@ run() {
     fi
     return "$status"
 }
-run 2>&1 | tee "$LOG"
+run "$@" 2>&1 | tee "$LOG"
 status=${PIPESTATUS[0]}
 echo "APPLICATION_EXIT=$status"
 echo "LOG=$LOG"
