@@ -10,6 +10,7 @@ from torch.utils.checkpoint import checkpoint
 
 from models.base import GPTBase
 from models.tensorized_attention import tensorized_attention_from_config
+from models.layerwise_tucker import LayerwiseTuckerAttention, LayerwiseTuckerMLP
 
 
 _LIGER_RMS_NORM_FUNCTION = None
@@ -148,15 +149,40 @@ class LlamaBlock(nn.Module):
         self.ln_1 = RMSNorm(
             config.n_embd, eps=config.rmsnorm_eps, use_liger=self.use_liger
         )
-        self.attn = (
-            tensorized_attention_from_config(config)
-            if self.tensorized_attention
-            else Attention(config)
-        )
         self.ln_2 = RMSNorm(
             config.n_embd, eps=config.rmsnorm_eps, use_liger=self.use_liger
         )
-        self.mlp  = MLP(config)
+
+        self.layerwise_tucker = getattr(config, "layerwise_tucker_variant", None)
+        if self.layerwise_tucker:
+            if qargs is not None or self.tensorized_attention:
+                raise ValueError("Layerwise Tucker requires standard BF16 attention.")
+            self.attn = LayerwiseTuckerAttention(
+                config.n_embd, config.n_head,
+                getattr(config, "n_kv_head", config.n_head),
+                config.layerwise_attention_ranks, config.init_std,
+            )
+            self.mlp = LayerwiseTuckerMLP(
+                config.n_embd, _mlp_hidden_dim(config), self.layerwise_tucker,
+                config.layerwise_mlp_ranks, config.init_std,
+            )
+            with torch.no_grad():
+                if self.attn.heads == self.attn.kv_heads:
+                    # Residual scaling is applied through the O role only.
+                    self.attn.qkvo.role[3].div_(math.sqrt(2 * config.n_layer))
+                else:
+                    self.attn.qo.role[1].div_(math.sqrt(2 * config.n_layer))
+                if self.layerwise_tucker == "A":
+                    self.mlp.down_core.div_(math.sqrt(2 * config.n_layer))
+                else:
+                    self.mlp.role[2].div_(math.sqrt(2 * config.n_layer))
+        else:
+            self.attn = (
+                tensorized_attention_from_config(config)
+                if self.tensorized_attention
+                else Attention(config)
+            )
+            self.mlp = MLP(config)
 
         # FP8-only cache — adds no nn.Parameter / nn.Linear children, so it
         # cannot perturb seed parity or optimizer-facing parameter structure.
@@ -191,6 +217,20 @@ class LlamaBlock(nn.Module):
 
     def _non_fp8_forward(self, x, freqs_cis):
         B, T, C = x.size()
+        if self.layerwise_tucker:
+            q, k, v, output_core = self.attn.project_qkv(self.ln_1(x))
+            if self.qkv_clipping:
+                c = self.qkv_clipping_factor
+                q, k, v = q.clamp(-c, c), k.clamp(-c, c), v.clamp(-c, c)
+            q, k = apply_rotary_emb(q, k, freqs_cis)
+            y = F.scaled_dot_product_attention(
+                q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=True,
+                enable_gqa=self.attn.heads != self.attn.kv_heads,
+            )
+            x = x + self.attn.project_output(y.transpose(1, 2), output_core)
+            return x + self.mlp(self.ln_2(x))
         if self.tensorized_attention:
             y = self.attn(self.ln_1(x))
             x = x + y
