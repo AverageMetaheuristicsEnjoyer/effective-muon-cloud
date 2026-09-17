@@ -55,6 +55,10 @@
       "args": "riemann-scaling small grouped cholesky",
       "last_observed_platform_status": "running",
       "running_at_unix": 1789673588,
+      "startup_check_job": "lm-mpi-job-e43579f9-2c3c-4c39-96e8-e5b273c08950",
+      "startup_observed_at_utc": "2026-09-17T19:37:05Z",
+      "completed_correctness_files": 2,
+      "startup_completed_timing_runs": 2,
       "application_completion_verified": false
     },
     {
@@ -68,6 +72,10 @@
       "args": "riemann-scaling large grouped cholesky",
       "last_observed_platform_status": "running",
       "running_at_unix": 1789673605,
+      "startup_check_job": "lm-mpi-job-7f9f4e5a-71e6-4531-89ac-b09db6a9d40d",
+      "startup_observed_at_utc": "2026-09-17T19:37:06Z",
+      "completed_correctness_files": 2,
+      "startup_completed_timing_runs": 0,
       "application_completion_verified": false
     }
   ]
