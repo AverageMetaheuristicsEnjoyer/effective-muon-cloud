@@ -115,8 +115,10 @@ run() {
     elif [ "$MODE" = riemann-scaling ]; then
         width=2048
         [ "${2:-small}" = large ] && width=2560
+        retraction=qr
+        [ "${4:-grouped}" = cholesky ] && retraction=cholesky
         for fraction in 0.25 0.5; do
-            timeout 1200 python scripts/validate_layerwise_riemannian.py --width "$width" --rank-fraction "$fraction" \
+            timeout 1200 python scripts/validate_layerwise_riemannian.py --width "$width" --rank-fraction "$fraction" --retraction "$retraction" \
                 --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
         done
         python scripts/benchmark_layerwise_scaling.py --group "${2:-small}" --riemannian \

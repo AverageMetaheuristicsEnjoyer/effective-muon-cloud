@@ -1,0 +1,12 @@
+{
+  "checks/riemann-pilot-r0.5-correctness.json": "2c4fa9060efb9cae11d54f990893bd4c1d04c8acfdc64a70c51b9cf065f7862b",
+  "checks/riemann-pilot-r0.25-correctness.json": "1ad193c025543b99a8b76b7357acc46f0a8a7b811fa9a0c40ca1c27a9c39bc56",
+  "strict-pilot/dense-r0.5-reference.json": "d16bfb1d1814ba2efb4f4134564ec8c2d1797b5ef71eedb69b7b8bee80142c08",
+  "strict-pilot/dense-r0.5-grouped.json": "bab661652858f011342f8af7c2dd3281096fbc94168162d6cd291c8c6faccedd",
+  "strict-pilot/B-r0.25-reference.json": "9fbfc2eac4288c19214d3d0bfd3014f5249d44a745600ea3a86d73309ee29166",
+  "strict-pilot/B-r0.25-grouped.json": "1053f34fec8395d135f1161209d025fa4cedb918d5fa3b72829e4e5fb1f48342",
+  "strict-pilot/B-r0.25-grouped-qr.json": "bc6735aee273f0b1905845de422248d1188ec1e9402aee27b65d0c85b386e844",
+  "strict-pilot/A-r0.5-reference.json": "e50e66c238ecffc71557733ab74eb3e030f5cfd88bfcf8b33a1f97512f5070de",
+  "strict-pilot/A-r0.5-grouped.json": "2482da871558be6302bbdece88f8e5f2341bfb1a8e4cc6e99960b65ffca27750",
+  "strict-pilot/A-r0.5-grouped-qr.json": "68fb02d00f1056564411c6a1870264e41e84a568f7a7adb6410ae98b7d548742"
+}

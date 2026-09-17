@@ -10,6 +10,35 @@
       "planned_timing_runs": 8,
       "planned_correctness_files": 2,
       "gpu_count": 1,
+      "application_completion_verified": true,
+      "application_exit": 0,
+      "completed_timing_runs": 8,
+      "completed_at_unix": 1789673050
+    },
+    {
+      "stage": "riemann-pilot-tf32",
+      "job": "lm-mpi-job-78a00840-d5d2-4dd4-8204-8874f1428821",
+      "source_commit": "2a9bde77d3e079439813c5403d25e4155f9e1f5b",
+      "created_at_unix": 1789672993,
+      "result_root": "/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/pilot-tf32",
+      "planned_timing_runs": 8,
+      "planned_correctness_files": 2,
+      "gpu_count": 1,
+      "application_completion_verified": true,
+      "application_exit": 1,
+      "completed_timing_runs": 0,
+      "outcome": "Quarter-rank A numerical gate failed at first update: momentum relative error 0.0151046 exceeds 0.003",
+      "completed_at_unix": 1789673134
+    },
+    {
+      "stage": "riemann-cholesky",
+      "job": "lm-mpi-job-6ee66699-c181-477c-9c1f-40593773172b",
+      "source_commit": "fb8110f81a99fc7125413837c2413b9f85bb2937",
+      "created_at_unix": 1789673204,
+      "result_root": "/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/pilot",
+      "planned_timing_runs": 5,
+      "planned_correctness_files": 2,
+      "gpu_count": 1,
       "application_completion_verified": false
     }
   ]
