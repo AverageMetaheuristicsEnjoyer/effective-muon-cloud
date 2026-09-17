@@ -84,6 +84,7 @@ run() {
         [ "$MODE" = compile-model ] && scope=model
         for compiler in reduce-overhead max-autotune; do
             python scripts/validate_layerwise_tucker_opt.py --compile-mode "$compiler" --compile-scope "$scope" \
+                --layers 12 --accumulation 2 \
                 --output "$RESULTS/$MODE-$compiler-correctness.json" || return $?
         done
         for mb in 1 16; do

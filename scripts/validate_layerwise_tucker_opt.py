@@ -21,6 +21,8 @@ def main():
     parser.add_argument("--compile-scope", choices=("blocks", "model"), default="blocks")
     parser.add_argument("--liger", action="store_true")
     parser.add_argument("--execution", default="reordered")
+    parser.add_argument("--layers", type=int, default=2)
+    parser.add_argument("--accumulation", type=int, default=1)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     torch.manual_seed(11)
@@ -29,7 +31,7 @@ def main():
     rows = []
     for variant in ("dense", "A", "B"):
         config = SimpleNamespace(
-            vocab_size=128, sequence_length=32, n_embd=128, n_head=4, n_layer=2,
+            vocab_size=128, sequence_length=32, n_embd=128, n_head=4, n_layer=args.layers,
             dropout=0.0, init_std=0.02, rmsnorm_eps=1e-5, ffn_hidden_size=352,
             multiple_of=32, dtype="bfloat16", device="cuda", liger_kernels=False,
             liger_bf16_residual=False,
@@ -60,12 +62,15 @@ def main():
         for step in range(3):
             losses = []
             for model in (reference, optimized):
-                if args.compile_mode != "none":
-                    torch.compiler.cudagraph_mark_step_begin()
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    loss = model(x, targets)["loss"]
-                loss.backward()
-                losses.append(loss.detach().clone())
+                micro_losses = []
+                for _ in range(args.accumulation):
+                    if args.compile_mode != "none":
+                        torch.compiler.cudagraph_mark_step_begin()
+                    with torch.autocast("cuda", dtype=torch.bfloat16):
+                        loss = model(x, targets)["loss"] / args.accumulation
+                    loss.backward()
+                    micro_losses.append(loss.detach().clone())
+                losses.append(sum(micro_losses))
             errors = [relative_error(b.grad, a.grad) for a, b in zip(reference_parameters, optimized_parameters)]
             row = dict(variant=variant, step=step, loss_relative_error=relative_error(losses[1], losses[0]),
                        max_parameter_gradient_relative_error=max(errors))
