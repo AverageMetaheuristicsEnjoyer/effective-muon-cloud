@@ -3,7 +3,7 @@ set -uo pipefail
 RESULTS=${LAYERWISE_OPT_RESULTS:-/workspace-SR006.nfs3/layerwise-tucker-opt-20260917}
 MODE=${1:-screen}
 if [ "$MODE" = export ]; then
-    python3 - "$RESULTS" "${2:-screen}" <<'PY'
+    python3 - "$RESULTS" "${2:-screen}" "${3:-}" <<'PY'
 import base64
 import gzip
 import hashlib
@@ -12,6 +12,8 @@ from pathlib import Path
 root = Path(sys.argv[1])
 paths = sorted(root.glob('*correctness.json')) + sorted(root.glob('*micro.json')) if sys.argv[2] == 'checks' else sorted((root / sys.argv[2]).glob('*.json'))
 for path in paths:
+    if sys.argv[3] not in path.name:
+        continue
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     encoded = base64.b64encode(gzip.compress(raw)).decode()
