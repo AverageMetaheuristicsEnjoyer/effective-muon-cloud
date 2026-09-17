@@ -48,6 +48,7 @@ def main():
         optimized = Llama(optimized_config).cuda().train()
         optimized.load_state_dict(reference.state_dict())
         reference_parameters = list(reference.parameters())
+        parameter_names = [name for name, _ in reference.named_parameters()]
         optimized_parameters = list(optimized.parameters())
         if args.compile_mode != "none":
             for index, block in enumerate(optimized.transformer.h):
@@ -75,6 +76,10 @@ def main():
             errors = [relative_error(b.grad, a.grad) for a, b in zip(reference_parameters, optimized_parameters)]
             row = dict(variant=variant, step=step, loss_relative_error=relative_error(losses[1], losses[0]),
                        max_parameter_gradient_relative_error=max(errors))
+            row["worst_gradient_parameter"] = parameter_names[errors.index(max(errors))]
+            squared_error = sum((b.grad.float() - a.grad.float()).square().sum() for a, b in zip(reference_parameters, optimized_parameters))
+            squared_reference = sum(a.grad.float().square().sum() for a in reference_parameters)
+            row["global_gradient_relative_error"] = (squared_error / squared_reference.clamp_min(1e-24)).sqrt().item()
             assert row["loss_relative_error"] < 0.01, row
             assert max(errors) < 0.1, row
             for optimizer in optimizers:

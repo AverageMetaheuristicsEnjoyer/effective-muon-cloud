@@ -63,7 +63,11 @@ run() {
     fi
     nvidia-smi || return $?
     status=0
-    if [ "$MODE" = screen ]; then
+    if [ "$MODE" = audit-quarter ]; then
+        python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune \
+            --execution triton-pointwise --layers 12 --rank-fraction 0.25 \
+            --output "$RESULTS/audit-quarter-correctness.json" || return $?
+    elif [ "$MODE" = screen ]; then
         python scripts/validate_layerwise_tucker_opt.py --output "$RESULTS/screen-correctness.json" || return $?
         for mb in 1 16; do
             for arm in dense:0.5 A:0.25 B:0.25 A:0.5 B:0.5; do
