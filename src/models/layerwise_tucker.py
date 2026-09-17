@@ -76,7 +76,7 @@ class LayerwiseTuckerMLP(nn.Module):
             self.packed_swiglu = packed_swiglu
         if use_liger:
             from liger_kernel.ops import LigerSiLUMulFunction
-            self.silu_mul = LigerSiLUMulFunction.apply
+            self.silu_mul = LigerSiLUMulFunction
         self.ff = nn.Parameter(torch.empty(ff, rff))
         self.model = nn.Parameter(torch.empty(d, rm))
         self.role = nn.Parameter(torch.empty(roles, rp))
@@ -112,7 +112,7 @@ class LayerwiseTuckerMLP(nn.Module):
                     gu = gu.unflatten(-1, (2, self.ff.shape[0]))
         if self.execution not in ("triton", "triton-pointwise"):
             gate, up = gu.unbind(dim=-2)
-            h = self.silu_mul(gate, up) if self.use_liger else F.silu(gate) * up
+            h = self.silu_mul.apply(gate, up) if self.use_liger else F.silu(gate) * up
         if self.execution != "reference":
             if self.variant == "A":
                 down = self.down_ff @ self.down_core.T

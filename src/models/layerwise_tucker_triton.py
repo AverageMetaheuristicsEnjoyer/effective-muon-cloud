@@ -115,5 +115,9 @@ class _PackedSwiGLU(torch.autograd.Function):
         return _swiglu_gradient(gu, grad)
 
 
-gate_up_swiglu = _GateUpSwiGLU.apply
-packed_swiglu = _PackedSwiGLU.apply
+def gate_up_swiglu(x, weight):
+    return _GateUpSwiGLU.apply(x, weight)
+
+
+def packed_swiglu(gu):
+    return _PackedSwiGLU.apply(gu)
