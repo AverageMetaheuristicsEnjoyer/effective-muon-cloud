@@ -1,3 +1,4 @@
+import copy
 import unittest
 from types import SimpleNamespace
 
@@ -97,6 +98,31 @@ class LayerwiseTuckerTest(unittest.TestCase):
                     a = model(tokens, tokens, get_logits=True)["logits"]
                     b = model(changed, changed, get_logits=True)["logits"]
                     torch.testing.assert_close(a[:, :4], b[:, :4])
+
+    def test_reordered_mlp_gradients_and_updates(self):
+        for variant in ("A", "B"):
+            for rp in (1, 2):
+                with self.subTest(variant=variant, rp=rp):
+                    ref = LayerwiseTuckerMLP(16, 24, variant, (9, 7, rp)).double()
+                    opt = copy.deepcopy(ref)
+                    opt.execution = "reordered"
+                    optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-3) for m in (ref, opt)]
+                    for _ in range(3):
+                        x = torch.randn(2, 5, 16, dtype=torch.float64)
+                        grad = torch.randn_like(x)
+                        xr, xo = x.clone().requires_grad_(), x.clone().requires_grad_()
+                        yr, yo = ref(xr), opt(xo)
+                        torch.testing.assert_close(yr, yo, rtol=1e-9, atol=1e-11)
+                        yr.backward(grad)
+                        yo.backward(grad)
+                        torch.testing.assert_close(xr.grad, xo.grad, rtol=1e-8, atol=1e-11)
+                        for pr, po in zip(ref.parameters(), opt.parameters()):
+                            torch.testing.assert_close(pr.grad, po.grad, rtol=1e-8, atol=1e-11)
+                        for optimizer in optimizers:
+                            optimizer.step()
+                            optimizer.zero_grad(set_to_none=True)
+                        for pr, po in zip(ref.parameters(), opt.parameters()):
+                            torch.testing.assert_close(pr, po, rtol=1e-8, atol=1e-11)
 
 
 if __name__ == "__main__":

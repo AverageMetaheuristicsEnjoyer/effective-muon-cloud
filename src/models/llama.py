@@ -165,6 +165,8 @@ class LlamaBlock(nn.Module):
             self.mlp = LayerwiseTuckerMLP(
                 config.n_embd, _mlp_hidden_dim(config), self.layerwise_tucker,
                 config.layerwise_mlp_ranks, config.init_std,
+                execution=getattr(config, "layerwise_execution", "reference"),
+                use_liger=self.use_liger,
             )
             with torch.no_grad():
                 if self.attn.heads == self.attn.kv_heads:

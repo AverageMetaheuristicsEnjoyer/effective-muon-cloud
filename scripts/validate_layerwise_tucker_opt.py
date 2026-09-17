@@ -1,0 +1,82 @@
+import argparse
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from models.llama import Llama
+from models.layerwise_tucker import LayerwiseTuckerMLP
+
+
+def relative_error(actual, expected):
+    return ((actual.float() - expected.float()).norm() / expected.float().norm().clamp_min(1e-12)).item()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--compile-mode", default="none")
+    parser.add_argument("--liger", action="store_true")
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    torch.manual_seed(11)
+    torch.set_num_threads(4)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    rows = []
+    for variant in ("dense", "A", "B"):
+        config = SimpleNamespace(
+            vocab_size=128, sequence_length=32, n_embd=128, n_head=4, n_layer=2,
+            dropout=0.0, init_std=0.02, rmsnorm_eps=1e-5, ffn_hidden_size=352,
+            multiple_of=32, dtype="bfloat16", device="cuda", liger_kernels=False,
+            layerwise_tucker_variant=None if variant == "dense" else variant,
+            layerwise_attention_ranks=(64, 16, 4),
+            layerwise_mlp_ranks=(176, 64, 2 if variant == "A" else 3),
+            layerwise_execution="reference",
+        )
+        reference = Llama(config).cuda().train()
+        optimized_config = SimpleNamespace(**vars(config))
+        optimized_config.layerwise_execution = "reordered"
+        optimized_config.liger_kernels = args.liger
+        optimized = Llama(optimized_config).cuda().train()
+        optimized.load_state_dict(reference.state_dict())
+        reference_parameters = list(reference.parameters())
+        optimized_parameters = list(optimized.parameters())
+        if args.compile_mode != "none":
+            for index, block in enumerate(optimized.transformer.h):
+                optimized.transformer.h[index] = torch.compile(
+                    block, fullgraph=True, dynamic=False, mode=args.compile_mode,
+                )
+        optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-4, fused=True) for m in (reference, optimized)]
+        x = torch.randint(128, (2, 32), device="cuda")
+        targets = torch.randint_like(x, 128)
+        for step in range(3):
+            losses = []
+            for model in (reference, optimized):
+                if args.compile_mode != "none":
+                    torch.compiler.cudagraph_mark_step_begin()
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    loss = model(x, targets)["loss"]
+                loss.backward()
+                losses.append(loss.detach().clone())
+            errors = [relative_error(b.grad, a.grad) for a, b in zip(reference_parameters, optimized_parameters)]
+            row = dict(variant=variant, step=step, loss_relative_error=relative_error(losses[1], losses[0]),
+                       max_parameter_gradient_relative_error=max(errors))
+            assert row["loss_relative_error"] < 0.01, row
+            assert max(errors) < 0.1, row
+            for optimizer in optimizers:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            row["max_parameter_relative_error"] = max(relative_error(b, a) for a, b in zip(reference_parameters, optimized_parameters))
+            assert row["max_parameter_relative_error"] < 0.02, row
+            rows.append(row)
+            print(json.dumps(row), flush=True)
+        del reference, optimized, optimizers
+    path = Path(args.output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(status="complete", args=vars(args), rows=rows), indent=2) + "\n")
+
+
+if __name__ == "__main__":
+    main()

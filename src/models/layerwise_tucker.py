@@ -63,11 +63,16 @@ class LayerwiseTuckerAttention(nn.Module):
 
 
 class LayerwiseTuckerMLP(nn.Module):
-    def __init__(self, d, ff, variant, ranks, init_std=0.02):
+    def __init__(self, d, ff, variant, ranks, init_std=0.02, execution="reference", use_liger=False):
         super().__init__()
         rff, rm, rp = ranks
         roles = 2 if variant == "A" else 3
         self.variant = variant
+        self.execution = execution
+        self.use_liger = use_liger
+        if use_liger:
+            from liger_kernel.ops import LigerSiLUMulFunction
+            self.silu_mul = LigerSiLUMulFunction.apply
         self.ff = nn.Parameter(torch.empty(ff, rff))
         self.model = nn.Parameter(torch.empty(d, rm))
         self.role = nn.Parameter(torch.empty(roles, rp))
@@ -86,10 +91,21 @@ class LayerwiseTuckerMLP(nn.Module):
 
     def forward(self, x):
         cores = torch.einsum("pc,ijc->pij", self.role, self.core)
-        gu = F.linear(x @ self.model, cores[:2].flatten(0, 1))
-        gu = F.linear(gu.unflatten(-1, (2, self.ff.shape[1])), self.ff)
+        if self.execution == "reference":
+            gu = F.linear(x @ self.model, cores[:2].flatten(0, 1))
+            gu = F.linear(gu.unflatten(-1, (2, self.ff.shape[1])), self.ff)
+        else:
+            # Contract weights before tokens; these are [role, ff, rank_model].
+            projected = self.ff @ cores
+            gu = F.linear(x @ self.model, projected[:2].flatten(0, 1))
+            gu = gu.unflatten(-1, (2, self.ff.shape[0]))
         gate, up = gu.unbind(dim=-2)
-        h = F.silu(gate) * up
+        h = self.silu_mul(gate, up) if self.use_liger else F.silu(gate) * up
+        if self.execution != "reference":
+            if self.variant == "A":
+                down = self.down_ff @ self.down_core.T
+                return F.linear(h @ down, self.down_out)
+            return F.linear(h @ projected[2], self.model)
         if self.variant == "A":
             return F.linear(F.linear(h @ self.down_ff, self.down_core), self.down_out)
         return F.linear((h @ self.ff) @ cores[2], self.model)

@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import os
 import platform
 import statistics
 import subprocess
@@ -25,8 +26,9 @@ def make_config(args):
         n_embd=d, n_head=heads, n_layer=layers, ffn_hidden_size=ff,
         dropout=0.0, init_std=0.02, rmsnorm_eps=1e-5, multiple_of=256,
         dtype="bfloat16" if args.device == "cuda" else "float32",
-        device=args.device, liger_kernels=False, fp8=False,
+        device=args.device, liger_kernels=args.liger, fp8=False,
         activation_checkpointing=False,
+        layerwise_execution=args.execution,
         layerwise_tucker_variant=None if args.variant == "dense" else args.variant,
         layerwise_attention_ranks=(rd, rh, 4),
         layerwise_mlp_ranks=(rff, rd, 2 if args.variant == "A" else 3),
@@ -54,6 +56,11 @@ def measure(args):
         torch.cuda.synchronize()
     initialization_ms = 1000 * (time.perf_counter() - start)
     initialization_peak = torch.cuda.max_memory_allocated() if cuda else None
+    if args.compile_mode != "none":
+        for index, block in enumerate(model.transformer.h):
+            model.transformer.h[index] = torch.compile(
+                block, mode=args.compile_mode, dynamic=False, fullgraph=True,
+            )
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, fused=cuda)
     generator = torch.Generator(device=args.device).manual_seed(20260917)
     x = torch.randint(config.vocab_size, (accumulation, args.microbatch, args.sequence_length),
@@ -67,6 +74,8 @@ def measure(args):
         start = time.perf_counter()
         losses = []
         for i in range(accumulation):
+            if args.compile_mode != "none":
+                torch.compiler.cudagraph_mark_step_begin()
             if record and cuda:
                 f, b, e = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
                 f.record()
@@ -112,6 +121,21 @@ def measure(args):
     if cuda:
         torch.cuda.reset_peak_memory_stats()
     rows = [step(True) for _ in range(args.steps)]
+    peak_allocated = torch.cuda.max_memory_allocated() if cuda else None
+    peak_reserved = torch.cuda.max_memory_reserved() if cuda else None
+    profile_rows = None
+    if args.profile:
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            record_shapes=True,
+        ) as profiler:
+            step(False)
+        profile_rows = [dict(
+            key=item.key, shapes=item.input_shapes, count=item.count,
+            self_cuda_ms=item.self_device_time_total / 1000,
+            self_cpu_ms=item.self_cpu_time_total / 1000,
+        ) for item in profiler.key_averages(group_by_input_shape=True)]
+        profile_rows.sort(key=lambda row: row["self_cuda_ms"], reverse=True)
     summary = {}
     for key in rows[0]:
         values = sorted(row[key] for row in rows)
@@ -122,11 +146,13 @@ def measure(args):
         commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         torch=torch.__version__, cuda=torch.version.cuda, python=platform.python_version(),
         gpu=torch.cuda.get_device_name() if cuda else None,
+        cpu_affinity=sorted(os.sched_getaffinity(0)),
+        profile=profile_rows,
         parameters=sum(p.numel() for p in model.parameters()),
         parameter_shapes={name: list(p.shape) for name, p in model.named_parameters()},
         initialization_ms=initialization_ms, initialization_peak_allocated_bytes=initialization_peak,
-        peak_allocated_bytes=torch.cuda.max_memory_allocated() if cuda else None,
-        peak_reserved_bytes=torch.cuda.max_memory_reserved() if cuda else None,
+        peak_allocated_bytes=peak_allocated,
+        peak_reserved_bytes=peak_reserved,
         accumulation=accumulation, warmup=warmup, samples=rows, summary=summary,
     )
 
@@ -143,6 +169,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--tiny", action="store_true")
+    parser.add_argument("--execution", choices=("reference", "reordered"), default="reference")
+    parser.add_argument("--compile-mode", choices=("none", "reduce-overhead", "max-autotune"), default="none")
+    parser.add_argument("--liger", action="store_true")
+    parser.add_argument("--profile", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     if min(args.microbatch, args.sequence_length, args.tokens_per_step, args.warmup, args.steps) <= 0:
