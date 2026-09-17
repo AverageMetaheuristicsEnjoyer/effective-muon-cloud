@@ -58,10 +58,13 @@ def measure(args):
     initialization_ms = 1000 * (time.perf_counter() - start)
     initialization_peak = torch.cuda.max_memory_allocated() if cuda else None
     if args.compile_mode != "none":
-        for index, block in enumerate(model.transformer.h):
-            model.transformer.h[index] = torch.compile(
-                block, mode=args.compile_mode, dynamic=False, fullgraph=True,
-            )
+        if args.compile_scope == "model":
+            model = torch.compile(model, mode=args.compile_mode, dynamic=False, fullgraph=True)
+        else:
+            for index, block in enumerate(model.transformer.h):
+                model.transformer.h[index] = torch.compile(
+                    block, mode=args.compile_mode, dynamic=False, fullgraph=True,
+                )
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, fused=cuda)
     generator = torch.Generator(device=args.device).manual_seed(20260917)
     x = torch.randint(config.vocab_size, (accumulation, args.microbatch, args.sequence_length),
@@ -172,6 +175,7 @@ def main():
     parser.add_argument("--tiny", action="store_true")
     parser.add_argument("--execution", choices=("reference", "reordered", "triton", "triton-pointwise"), default="reference")
     parser.add_argument("--compile-mode", choices=("none", "reduce-overhead", "max-autotune"), default="none")
+    parser.add_argument("--compile-scope", choices=("blocks", "model"), default="blocks")
     parser.add_argument("--liger", action="store_true")
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--output", required=True)

@@ -79,10 +79,12 @@ run() {
                 done
             done
         done
-    elif [ "$MODE" = compile ]; then
+    elif [ "$MODE" = compile ] || [ "$MODE" = compile-model ]; then
+        scope=blocks
+        [ "$MODE" = compile-model ] && scope=model
         for compiler in reduce-overhead max-autotune; do
-            python scripts/validate_layerwise_tucker_opt.py --compile-mode "$compiler" \
-                --output "$RESULTS/compile-$compiler-correctness.json" || return $?
+            python scripts/validate_layerwise_tucker_opt.py --compile-mode "$compiler" --compile-scope "$scope" \
+                --output "$RESULTS/$MODE-$compiler-correctness.json" || return $?
         done
         for mb in 1 16; do
             for arm in dense:0.5 A:0.5 B:0.25; do
@@ -91,7 +93,7 @@ run() {
                     name="$variant-r$fraction-mb$mb-$compiler"
                     echo "BEGIN $name"
                     timeout 900 python scripts/benchmark_layerwise_tucker.py --variant "$variant" --rank-fraction "$fraction" \
-                        --microbatch "$mb" --execution reordered --compile-mode "$compiler" \
+                        --microbatch "$mb" --execution reordered --compile-mode "$compiler" --compile-scope "$scope" \
                         --output "$RESULTS/$MODE/$name.json" || status=1
                     echo "END $name"
                 done

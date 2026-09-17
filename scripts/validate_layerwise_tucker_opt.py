@@ -18,6 +18,7 @@ def relative_error(actual, expected):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--compile-mode", default="none")
+    parser.add_argument("--compile-scope", choices=("blocks", "model"), default="blocks")
     parser.add_argument("--liger", action="store_true")
     parser.add_argument("--execution", default="reordered")
     parser.add_argument("--output", required=True)
@@ -46,10 +47,13 @@ def main():
         reference_parameters = list(reference.parameters())
         optimized_parameters = list(optimized.parameters())
         if args.compile_mode != "none":
-            for index, block in enumerate(optimized.transformer.h):
-                optimized.transformer.h[index] = torch.compile(
-                    block, fullgraph=True, dynamic=False, mode=args.compile_mode,
-                )
+            if args.compile_scope == "model":
+                optimized = torch.compile(optimized, fullgraph=True, dynamic=False, mode=args.compile_mode)
+            else:
+                for index, block in enumerate(optimized.transformer.h):
+                    optimized.transformer.h[index] = torch.compile(
+                        block, fullgraph=True, dynamic=False, mode=args.compile_mode,
+                    )
         optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-4, fused=True) for m in (reference, optimized)]
         x = torch.randint(128, (2, 32), device="cuda")
         targets = torch.randint_like(x, 128)
