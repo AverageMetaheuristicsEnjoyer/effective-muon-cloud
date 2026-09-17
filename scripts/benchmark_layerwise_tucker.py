@@ -20,6 +20,12 @@ from models.llama import Llama
 
 def make_config(args):
     d, ff, heads, layers, vocab = (32, 64, 4, 2, 128) if args.tiny else (1024, 2816, 8, 12, 50304)
+    d = args.width if args.width is not None else d
+    ff = args.ffn_hidden_size if args.ffn_hidden_size is not None else ff
+    heads = args.heads if args.heads is not None else heads
+    layers = args.layers if args.layers is not None else layers
+    if min(d, ff, heads, layers) <= 0 or d % heads or (d // heads) % 2:
+        raise ValueError("positive model dimensions and an even integer head dimension are required")
     rd, rh, rff = [max(1, int(dim * args.rank_fraction)) for dim in (d, d // heads, ff)]
     return SimpleNamespace(
         vocab_size=vocab, sequence_length=args.sequence_length,
@@ -174,6 +180,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--tiny", action="store_true")
+    parser.add_argument("--layers", type=int)
+    parser.add_argument("--width", type=int)
+    parser.add_argument("--heads", type=int)
+    parser.add_argument("--ffn-hidden-size", type=int)
     parser.add_argument("--execution", choices=("reference", "reordered", "triton", "triton-pointwise"), default="reference")
     parser.add_argument("--compile-mode", choices=("none", "reduce-overhead", "max-autotune"), default="none")
     parser.add_argument("--stable-grad-buffers", action="store_true")
@@ -185,6 +195,8 @@ def main():
         parser.error("batch, sequence, tokens, warmup and steps must be positive")
     try:
         result = measure(args)
+    except torch.OutOfMemoryError:
+        result = {"status": "oom", "args": vars(args), "error": traceback.format_exc()}
     except Exception:
         result = {"status": "failed", "args": vars(args), "error": traceback.format_exc()}
     path = Path(args.output)

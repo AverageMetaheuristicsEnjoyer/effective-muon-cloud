@@ -52,7 +52,7 @@ run() {
     df -i "$RESULTS"
     python -m pip install --disable-pip-version-check --target /tmp/layerwise-opt-deps tiktoken || return $?
     python -m pip install --disable-pip-version-check --no-deps --target /tmp/layerwise-opt-deps liger-kernel==0.8.1 || return $?
-    python -m unittest discover -s tests -p test_layerwise_tucker.py -v || return $?
+    python -m unittest discover -s tests -p 'test_layerwise*.py' -v || return $?
     if [ "$MODE" = selftest ]; then
         for v in dense A B; do
             python scripts/benchmark_layerwise_tucker.py --device cpu --tiny --variant "$v" \
@@ -63,7 +63,24 @@ run() {
     fi
     nvidia-smi || return $?
     status=0
-    if [ "$MODE" = audit-quarter ]; then
+    if [ "$MODE" = scaling ]; then
+        width=2048; heads=16; ff=5632
+        if [ "${2:-small}" = large ]; then
+            width=2560; heads=20; ff=7040
+        fi
+        for fraction in 0.25 0.5; do
+            for kernels in native liger; do
+                extra=()
+                [ "$kernels" = liger ] && extra=(--liger)
+                timeout 900 python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune \
+                    --width "$width" --heads "$heads" --ffn-hidden-size "$ff" \
+                    --layers 2 --accumulation 2 --stable-grad-buffers --rank-fraction "$fraction" \
+                    "${extra[@]}" --output "$RESULTS/scaling-r$fraction-$kernels-correctness.json" || return $?
+            done
+        done
+        python scripts/benchmark_layerwise_scaling.py --group "${2:-small}" --output-dir "$RESULTS/$MODE"
+        return $?
+    elif [ "$MODE" = audit-quarter ]; then
         execution=${2:-triton-pointwise}
         python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune \
             --execution "$execution" --layers 12 --rank-fraction 0.25 \

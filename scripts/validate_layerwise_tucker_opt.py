@@ -21,24 +21,29 @@ def main():
     parser.add_argument("--liger", action="store_true")
     parser.add_argument("--execution", default="reordered")
     parser.add_argument("--layers", type=int, default=2)
+    parser.add_argument("--width", type=int, default=128)
+    parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument("--ffn-hidden-size", type=int, default=352)
     parser.add_argument("--accumulation", type=int, default=1)
     parser.add_argument("--stable-grad-buffers", action="store_true")
     parser.add_argument("--rank-fraction", type=float, choices=(0.25, 0.5), default=0.5)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    if min(args.layers, args.width, args.heads, args.ffn_hidden_size) <= 0 or args.width % args.heads or (args.width // args.heads) % 2:
+        parser.error("positive model dimensions and an even integer head dimension are required")
     torch.manual_seed(11)
     torch.set_num_threads(4)
     torch.backends.cuda.matmul.allow_tf32 = False
     rows = []
     for variant in ("dense", "A", "B"):
         config = SimpleNamespace(
-            vocab_size=128, sequence_length=32, n_embd=128, n_head=4, n_layer=args.layers,
-            dropout=0.0, init_std=0.02, rmsnorm_eps=1e-5, ffn_hidden_size=352,
+            vocab_size=128, sequence_length=32, n_embd=args.width, n_head=args.heads, n_layer=args.layers,
+            dropout=0.0, init_std=0.02, rmsnorm_eps=1e-5, ffn_hidden_size=args.ffn_hidden_size,
             multiple_of=32, dtype="bfloat16", device="cuda", liger_kernels=False,
             liger_bf16_residual=False,
             layerwise_tucker_variant=None if variant == "dense" else variant,
-            layerwise_attention_ranks=(int(128 * args.rank_fraction), int(32 * args.rank_fraction), 4),
-            layerwise_mlp_ranks=(int(352 * args.rank_fraction), int(128 * args.rank_fraction), 2 if variant == "A" else 3),
+            layerwise_attention_ranks=(int(args.width * args.rank_fraction), int(args.width // args.heads * args.rank_fraction), 4),
+            layerwise_mlp_ranks=(int(args.ffn_hidden_size * args.rank_fraction), int(args.width * args.rank_fraction), 2 if variant == "A" else 3),
             layerwise_execution="reference",
         )
         reference = Llama(config).cuda().train()
