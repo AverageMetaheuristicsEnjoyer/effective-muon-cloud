@@ -116,23 +116,28 @@ run() {
                 echo "END $name"
             done
         done
-    elif [ "$MODE" = combined ]; then
-        for execution in reordered triton-pointwise; do
+    elif [ "$MODE" = combined ] || [ "$MODE" = combined-mb1 ]; then
+        mb=16; accumulation=1; stable=(); executions=(reordered triton-pointwise)
+        if [ "$MODE" = combined-mb1 ]; then
+            mb=1; accumulation=2; stable=(--stable-grad-buffers); executions=(reordered)
+        fi
+        for execution in "${executions[@]}"; do
             python scripts/validate_layerwise_tucker_opt.py --compile-mode max-autotune --liger \
-                --execution "$execution" --layers 12 \
-                --output "$RESULTS/combined-$execution-correctness.json" || return $?
+                --execution "$execution" --layers 12 --accumulation "$accumulation" "${stable[@]}" \
+                --output "$RESULTS/$MODE-$execution-correctness.json" || return $?
         done
         for arm in dense:0.5 A:0.5 B:0.25; do
             variant=${arm%:*}; fraction=${arm#*:}
             for kernels in native liger liger-pointwise; do
                 [ "$variant" = dense ] && [ "$kernels" = liger-pointwise ] && continue
+                [ "$mb" = 1 ] && [ "$kernels" = liger-pointwise ] && continue
                 extra=(); execution=reordered
                 [ "$kernels" != native ] && extra=(--liger)
                 [ "$kernels" = liger-pointwise ] && execution=triton-pointwise
-                name="$variant-r$fraction-mb16-$kernels"
+                name="$variant-r$fraction-mb$mb-$kernels"
                 echo "BEGIN $name"
                 timeout 900 python scripts/benchmark_layerwise_tucker.py --variant "$variant" --rank-fraction "$fraction" \
-                    --microbatch 16 --execution "$execution" --compile-mode max-autotune "${extra[@]}" \
+                    --microbatch "$mb" --execution "$execution" --compile-mode max-autotune "${extra[@]}" "${stable[@]}" \
                     --output "$RESULTS/$MODE/$name.json" || status=1
                 echo "END $name"
             done
