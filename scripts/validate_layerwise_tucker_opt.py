@@ -30,6 +30,7 @@ def main():
             vocab_size=128, sequence_length=32, n_embd=128, n_head=4, n_layer=2,
             dropout=0.0, init_std=0.02, rmsnorm_eps=1e-5, ffn_hidden_size=352,
             multiple_of=32, dtype="bfloat16", device="cuda", liger_kernels=False,
+            liger_bf16_residual=False,
             layerwise_tucker_variant=None if variant == "dense" else variant,
             layerwise_attention_ranks=(64, 16, 4),
             layerwise_mlp_ranks=(176, 64, 2 if variant == "A" else 3),

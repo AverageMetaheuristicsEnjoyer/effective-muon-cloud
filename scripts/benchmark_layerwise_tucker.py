@@ -27,6 +27,7 @@ def make_config(args):
         dropout=0.0, init_std=0.02, rmsnorm_eps=1e-5, multiple_of=256,
         dtype="bfloat16" if args.device == "cuda" else "float32",
         device=args.device, liger_kernels=args.liger, fp8=False,
+        liger_bf16_residual=False,
         activation_checkpointing=False,
         layerwise_execution=args.execution,
         layerwise_tucker_variant=None if args.variant == "dense" else args.variant,

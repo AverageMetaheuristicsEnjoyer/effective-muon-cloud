@@ -436,7 +436,7 @@ class Llama(GPTBase):
             f"block size is only {self.config.sequence_length}"
         )
         x = self.transformer.wte(idx)
-        if self.use_liger and x.is_cuda:
+        if self.use_liger and x.is_cuda and getattr(self.config, "liger_bf16_residual", True):
             activation_dtype = {
                 "float32": torch.float32,
                 "float16": torch.float16,
