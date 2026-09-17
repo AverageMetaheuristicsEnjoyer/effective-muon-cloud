@@ -25,11 +25,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--rank-fraction", type=float, default=0.25)
+    parser.add_argument("--tf32", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     torch.set_num_threads(4)
     torch.manual_seed(17)
-    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = args.tf32
     rows = []
     for variant in ("dense", "A", "B"):
         d = args.width

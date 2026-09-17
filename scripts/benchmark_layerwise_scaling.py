@@ -22,6 +22,9 @@ def main():
     parser.add_argument("--group", choices=GROUPS, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--riemannian", action="store_true")
+    parser.add_argument("--tucker-implementation", choices=("reference", "grouped"), default="grouped")
+    parser.add_argument("--retraction-implementation", choices=("reference", "grouped"), default="grouped")
     args = parser.parse_args()
     cases = []
     for profile in GROUPS[args.group]:
@@ -29,23 +32,31 @@ def main():
         for microbatch in (1, 4, 16, 32):
             for variant, fraction in ARMS:
                 for kernels in (("native", "liger") if microbatch == 32 else ("native",)):
-                    name = f"{profile}-{variant}-r{fraction}-mb{microbatch}-{kernels}-s42"
-                    output = args.output_dir / f"{name}.json"
-                    command = [
-                        sys.executable, "scripts/benchmark_layerwise_tucker.py",
-                        "--layers", str(layers), "--width", str(width), "--heads", str(heads),
-                        "--ffn-hidden-size", str(ff), "--variant", variant,
-                        "--rank-fraction", str(fraction), "--microbatch", str(microbatch),
-                        "--sequence-length", "1024", "--tokens-per-step", "32768",
-                        "--warmup", "5", "--steps", "20", "--seed", "42",
-                        "--execution", "reordered", "--compile-mode", "max-autotune",
-                        "--output", str(output),
-                    ]
-                    if microbatch < 32:
-                        command.append("--stable-grad-buffers")
-                    if kernels == "liger":
-                        command.append("--liger")
-                    cases.append(dict(name=name, command=command, output=str(output)))
+                    policies = ("adamw",)
+                    if args.riemannian:
+                        policies = ("reference", "grouped") if variant == "dense" else (args.tucker_implementation,)
+                    for policy in policies:
+                        name = f"{profile}-{variant}-r{fraction}-mb{microbatch}-{kernels}-{policy}-s42"
+                        output = args.output_dir / f"{name}.json"
+                        command = [
+                            sys.executable, "scripts/benchmark_layerwise_tucker.py",
+                            "--layers", str(layers), "--width", str(width), "--heads", str(heads),
+                            "--ffn-hidden-size", str(ff), "--variant", variant,
+                            "--rank-fraction", str(fraction), "--microbatch", str(microbatch),
+                            "--sequence-length", "1024", "--tokens-per-step", "32768",
+                            "--warmup", "5", "--steps", "20", "--seed", "42",
+                            "--execution", "reordered", "--compile-mode", "max-autotune",
+                            "--output", str(output),
+                        ]
+                        if args.riemannian:
+                            command += ["--optimizer", "muon" if variant == "dense" else "riemannian",
+                                        "--optimizer-implementation", policy,
+                                        "--retraction-implementation", args.retraction_implementation]
+                        if microbatch < 32:
+                            command.append("--stable-grad-buffers")
+                        if kernels == "liger":
+                            command.append("--liger")
+                        cases.append(dict(name=name, command=command, output=str(output)))
     if args.dry_run:
         print(json.dumps(cases, indent=2))
         return 0

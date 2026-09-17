@@ -69,8 +69,10 @@ run() {
     nvidia-smi || return $?
     status=0
     if [ "$MODE" = riemann-pilot ]; then
+        precision=()
+        [ "${2:-strict}" = tf32 ] && precision=(--tf32)
         for fraction in 0.25 0.5; do
-            timeout 1200 python scripts/validate_layerwise_riemannian.py --rank-fraction "$fraction" \
+            timeout 1200 python scripts/validate_layerwise_riemannian.py --rank-fraction "$fraction" "${precision[@]}" \
                 --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
         done
         for arm in dense:0.5 A:0.5 B:0.25; do
@@ -87,9 +89,20 @@ run() {
                     --rank-fraction "$fraction" --optimizer "$optimizer" \
                     --optimizer-implementation "$implementation" --retraction-implementation "$retraction" \
                     --execution reordered --compile-mode max-autotune --microbatch 16 \
-                    --warmup 5 --steps 10 --output "$RESULTS/$MODE/$name.json" || return $?
+                    --warmup 5 --steps 10 "${precision[@]}" --output "$RESULTS/$MODE/$name.json" || return $?
             done
         done
+    elif [ "$MODE" = riemann-scaling ]; then
+        width=2048
+        [ "${2:-small}" = large ] && width=2560
+        for fraction in 0.25 0.5; do
+            timeout 1200 python scripts/validate_layerwise_riemannian.py --width "$width" --rank-fraction "$fraction" \
+                --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
+        done
+        python scripts/benchmark_layerwise_scaling.py --group "${2:-small}" --riemannian \
+            --tucker-implementation "${3:-grouped}" --retraction-implementation "${4:-grouped}" \
+            --output-dir "$RESULTS/$MODE"
+        return $?
     elif [ "$MODE" = scaling ]; then
         width=2048; heads=16; ff=5632
         if [ "${2:-small}" = large ]; then

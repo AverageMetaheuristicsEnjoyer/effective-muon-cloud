@@ -49,7 +49,7 @@ def measure(args):
         torch.cuda.init()
     torch.set_num_threads(4)
     torch.manual_seed(args.seed)
-    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = args.tf32
     config = make_config(args)
     if args.tokens_per_step % (args.microbatch * args.sequence_length):
         raise ValueError("tokens-per-step must be divisible by microbatch * sequence-length")
@@ -169,6 +169,7 @@ def measure(args):
     peak_reserved = torch.cuda.max_memory_reserved() if cuda else None
     geometry = None
     if specs:
+        torch.backends.cuda.matmul.allow_tf32 = False
         orthogonality, tangency = [], []
         with torch.no_grad():
             for _, _, factors in specs:
@@ -179,6 +180,7 @@ def measure(args):
                     tangency.append((factor.T @ momentum + momentum.T @ factor).norm() / momentum.norm().clamp_min(1e-12))
         geometry = dict(max_orthogonality_error=torch.stack(orthogonality).max().item(),
                         max_momentum_tangency_error=torch.stack(tangency).max().item())
+        torch.backends.cuda.matmul.allow_tf32 = args.tf32
         if not (geometry["max_orthogonality_error"] < 1e-4 and geometry["max_momentum_tangency_error"] < 1e-3):
             raise RuntimeError(f"Riemannian geometry check failed: {geometry}")
     profile_rows = None
@@ -239,6 +241,7 @@ def main():
     parser.add_argument("--optimizer-implementation", choices=("reference", "grouped"), default="reference")
     parser.add_argument("--retraction-implementation", choices=("reference", "grouped"), default="reference")
     parser.add_argument("--optimizer-batch-size", type=int, default=4)
+    parser.add_argument("--tf32", action="store_true")
     parser.add_argument("--execution", choices=("reference", "reordered", "triton", "triton-pointwise"), default="reference")
     parser.add_argument("--compile-mode", choices=("none", "reduce-overhead", "max-autotune"), default="none")
     parser.add_argument("--stable-grad-buffers", action="store_true")
