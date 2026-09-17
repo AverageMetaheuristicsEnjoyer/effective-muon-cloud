@@ -3,6 +3,8 @@
 Follow-up to [the 257M optimization study](../layerwise-tucker-opt-20260917/README.md).
 Branch: `codex/layerwise-tucker-opt-20260917`. This is a throughput/memory screen, not a training-quality study.
 
+**Stopped after optimizer-scope clarification.** Both agent-created jobs were cancelled at 18:51:42 UTC on September 17 (Cloud cancellation acknowledged `status=deleted`, error code 0). The user requested comparisons including the earlier Riemannian update and dense controls. The AdamW-only matrix below is retained as the submitted protocol, not a completed experiment or the approved replacement optimizer matrix. Persistent NFS artifacts were not deleted; their contents have not yet been exported/verified.
+
 ## Registered matrix
 
 Parameter counts below are obtained by constructing the actual models on the PyTorch meta device, including untied embeddings and LM head. These projections remain dense. Head dimension is always 128; FF width is always 2.75 times model width. Only layer count and width change.
@@ -41,3 +43,9 @@ Use distinct `LAYERWISE_OPT_RESULTS` roots:
 Each root retains `logs/`, correctness JSON, `scaling/manifest-<group>.json`, individual raw timing/OOM JSON, and `scaling.exit`. Platform completion is not sufficient: check application exit, all planned outcomes, correctness gates and persisted artifacts. `export scaling` and `export checks` in the existing launcher provide chunked SHA-256-protected export; `peek` reads persisted status without using a GPU.
 
 Local checks before submission: five unit tests (including meta-device construction for all 30 profile/variant/rank combinations), an overridden-geometry CPU training smoke, dry-run matrix enumeration, shell syntax and diff checks. Submission IDs and live status are recorded in `jobs.json` after launch.
+
+Both jobs were accepted and observed in platform `running` state on September 17 at approximately 18:50 UTC. Initial log retrieval timed out after 50 seconds; numerical gate completion and actual GPU identity have not yet been verified. Source revision submitted: `45057e782942ffd15df486ff37b1a313f21fff19`. No timing/quality results are claimed at this handoff.
+
+Optimizer clarification: this series and the preceding optimization series use ordinary fused AdamW directly on Tucker factors/cores. Neither Muon, tangent-space projection nor Riemannian retraction is included. Full-step speedups must not be transferred to the earlier Riemannian training method without a separate optimizer comparison.
+
+The earlier production late-growth launcher uses Tensorion core updates, Riemannian Muon factors, QR gauge fixing with momentum transport, `tucker_lr_scaling_mode=none` and no post-NS tangent projection. The older calibrated launcher differs in its LR scaling. Neither is a drop-in switch for the new layerwise model: attention has an unfactorized head axis, MLP factors are shared across roles, and the existing module traversal targets `TuckerLinear`. The old grouped QR implementation falls back to the sequential production path when vector transport is enabled; the old grouped Muon kernels implement vanilla MuonLite, not the Riemannian Tensorion update. Reuse requires an explicit adaptation and numerical parity tests, not simply enabling those flags.

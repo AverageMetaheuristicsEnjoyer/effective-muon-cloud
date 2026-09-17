@@ -1,0 +1,37 @@
+{
+  "branch": "codex/layerwise-tucker-opt-20260917",
+  "source_commit": "45057e782942ffd15df486ff37b1a313f21fff19",
+  "protocol": "AdamW, reordered, max-autotune, 32768 tokens per step, seed 42",
+  "jobs": [
+    {
+      "group": "small",
+      "job": "lm-mpi-job-c36e91b1-5125-4d76-9e3d-d749feb3b35a",
+      "created_at_unix": 1789670837,
+      "gpu_count": 1,
+      "image": "torch28",
+      "planned_timing_attempts": 75,
+      "result_root": "/workspace-SR006.nfs3/layerwise-tucker-scale-20260917/small",
+      "last_observed_platform_status": "deleted",
+      "cancelled_at_unix": 1789671102,
+      "cancellation_reason": "User clarified that the target comparison needs dense Muon and the prior Riemannian Tucker update, not the AdamW-only screen",
+      "running_at_unix": 1789670877,
+      "log_check": "50-second gateway timeout; GPU correctness and timing results not yet verified",
+      "application_completion_verified": false
+    },
+    {
+      "group": "large",
+      "job": "lm-mpi-job-c60f718b-5414-4b47-a6cd-1d2d6fe50f9c",
+      "created_at_unix": 1789670839,
+      "gpu_count": 1,
+      "image": "torch28",
+      "planned_timing_attempts": 50,
+      "result_root": "/workspace-SR006.nfs3/layerwise-tucker-scale-20260917/large",
+      "last_observed_platform_status": "deleted",
+      "cancelled_at_unix": 1789671102,
+      "cancellation_reason": "User clarified that the target comparison needs dense Muon and the prior Riemannian Tucker update, not the AdamW-only screen",
+      "running_at_unix": 1789670870,
+      "log_check": "50-second gateway timeout; GPU correctness and timing results not yet verified",
+      "application_completion_verified": false
+    }
+  ]
+}
