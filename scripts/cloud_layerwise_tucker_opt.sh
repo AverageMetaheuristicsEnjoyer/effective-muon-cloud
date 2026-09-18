@@ -2,6 +2,13 @@
 set -uo pipefail
 RESULTS=${LAYERWISE_OPT_RESULTS:-/workspace-SR006.nfs3/layerwise-tucker-opt-20260917}
 MODE=${1:-screen}
+if [ "$MODE" = disk-local ]; then
+    echo LOCAL_DISK_PROBE
+    df -h /tmp /home/jovyan
+    df -i /tmp /home/jovyan
+    echo LOCAL_DISK_EXIT=0
+    exit 0
+fi
 if [ "$MODE" = disk ]; then
     df -h /tmp /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3
     df -i /tmp /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3
