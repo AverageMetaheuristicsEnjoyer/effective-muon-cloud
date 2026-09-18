@@ -44,6 +44,32 @@ for path in sorted(root.glob('*.exit')):
 PY
     exit $?
 fi
+if [ "$MODE" = progress ]; then
+    python3 - "$RESULTS" <<'PY'
+import json
+import os
+import sys
+from collections import Counter
+from pathlib import Path
+root = Path(sys.argv[1])
+for group in ('small', 'large'):
+    path = root / f'scale-{group}'
+    counts = Counter()
+    for result in sorted((path / 'riemann-scaling').glob('*.json')):
+        if not result.name.startswith('manifest-'):
+            counts[json.loads(result.read_text())['status']] += 1
+    print('PROGRESS', group, json.dumps(counts), flush=True)
+    for check in sorted(path.glob('*correctness.json')):
+        print('CHECK', group, check.name, json.loads(check.read_text())['status'], flush=True)
+    for log in sorted((path / 'logs').glob('*.log')):
+        print('LATEST', group, '\n'.join(log.read_text().splitlines()[-2:])[-1500:], flush=True)
+    for result in path.glob('*.exit'):
+        print('APPLICATION_EXIT', group, result.read_text().strip(), flush=True)
+fs = os.statvfs(root)
+print('STORAGE_FREE', fs.f_bavail * fs.f_frsize, 'INODES_FREE', fs.f_favail, flush=True)
+PY
+    exit $?
+fi
 if [ "$MODE" = export ]; then
     python3 - "$RESULTS" "${2:-screen}" "${3:-}" <<'PY'
 import base64
