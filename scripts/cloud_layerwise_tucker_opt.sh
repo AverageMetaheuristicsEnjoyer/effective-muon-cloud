@@ -8,6 +8,10 @@ if [ "$MODE" = disk ]; then
     du -h --max-depth=2 /workspace-SR006.nfs3/layerwise-tucker-riemann-20260917
     exit $?
 fi
+if [ "$MODE" = recover ]; then
+    python3 scripts/recover_layerwise_scaling.py "$RESULTS"
+    exit $?
+fi
 if [ "$MODE" = export ]; then
     python3 - "$RESULTS" "${2:-screen}" "${3:-}" <<'PY'
 import base64
@@ -311,6 +315,7 @@ run() {
 }
 run "$@" 2>&1 | tee "$LOG"
 status=${PIPESTATUS[0]}
+rm -rf -- /tmp/layerwise-opt-cache /tmp/layerwise-opt-deps
 echo "APPLICATION_EXIT=$status"
 echo "LOG=$LOG"
 printf '%s\n' "$status" > "$RESULTS/$MODE.exit"
