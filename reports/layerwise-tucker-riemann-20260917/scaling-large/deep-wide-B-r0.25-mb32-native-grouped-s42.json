@@ -1,0 +1,31 @@
+{
+  "status": "oom",
+  "args": {
+    "variant": "B",
+    "rank_fraction": 0.25,
+    "microbatch": 32,
+    "sequence_length": 1024,
+    "tokens_per_step": 32768,
+    "warmup": 5,
+    "steps": 20,
+    "seed": 42,
+    "device": "cuda",
+    "tiny": false,
+    "layers": 24,
+    "width": 2048,
+    "heads": 16,
+    "ffn_hidden_size": 5632,
+    "optimizer": "riemannian",
+    "optimizer_implementation": "grouped",
+    "retraction_implementation": "cholesky",
+    "optimizer_batch_size": 4,
+    "tf32": false,
+    "execution": "reordered",
+    "compile_mode": "max-autotune",
+    "stable_grad_buffers": false,
+    "liger": false,
+    "profile": false,
+    "output": "/workspace-SR006.nfs3/layerwise-tucker-riemann-20260917/scale-large/riemann-scaling/deep-wide-B-r0.25-mb32-native-grouped-s42.json"
+  },
+  "error": "Traceback (most recent call last):\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 262, in main\n    result = measure(args)\n             ^^^^^^^^^^^^^\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 165, in measure\n    warmup = [step(False) for _ in range(args.warmup)]\n              ^^^^^^^^^^^\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 119, in step\n    loss = model(x[i], targets[i])[\"loss\"] / accumulation\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/nn/modules/module.py\", line 1773, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/nn/modules/module.py\", line 1784, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/app.0/src/models/llama.py\", line 536, in forward\n    loss = F.cross_entropy(\n           ^^^^^^^^^^^^^^^^\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/nn/functional.py\", line 3462, in cross_entropy\n    return torch._C._nn.cross_entropy_loss(\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntorch.OutOfMemoryError: CUDA out of memory. Tried to allocate 6.14 GiB. GPU 0 has a total capacity of 79.21 GiB of which 3.67 GiB is free. Including non-PyTorch memory, this process has 75.53 GiB memory in use. Of the allocated memory 74.38 GiB is allocated by PyTorch, with 214.27 MiB allocated in private pools (e.g., CUDA Graphs), and 139.59 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)\n"
+}

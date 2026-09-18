@@ -105,7 +105,13 @@
       "gpu_count": 1,
       "planned_reused_cases": 69,
       "planned_new_cases": 21,
-      "application_completion_verified": false
+      "application_completion_verified": true,
+      "application_exit": 0,
+      "completed_at_unix": 1789720919,
+      "completed_timing_runs": 90,
+      "oom_runs": 0,
+      "export_job": "lm-mpi-job-f7983162-58fc-4b39-9d0e-50223ef6f8d4",
+      "checks_export_job": "lm-mpi-job-d9d333a2-03a2-4d0e-bb49-f29ba044f4b5"
     },
     {
       "stage": "riemann-recovery-large",
@@ -116,7 +122,13 @@
       "gpu_count": 1,
       "planned_reused_cases": 36,
       "planned_new_cases": 24,
-      "application_completion_verified": false
+      "application_completion_verified": true,
+      "application_exit": 0,
+      "completed_at_unix": 1789720366,
+      "completed_timing_runs": 33,
+      "oom_runs": 27,
+      "export_job": "lm-mpi-job-9d0d0f73-de93-48eb-934a-824b06b4e73e",
+      "checks_export_job": "lm-mpi-job-613bce11-c40b-47f7-bf8b-80cabb1704b5"
     }
   ]
 }

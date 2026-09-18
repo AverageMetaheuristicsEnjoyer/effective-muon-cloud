@@ -1,0 +1,75 @@
+{
+  "status": "complete",
+  "args": {
+    "width": 2048,
+    "rank_fraction": 0.25,
+    "tf32": false,
+    "retraction": "cholesky",
+    "output": "/workspace-SR006.nfs2/layerwise-tucker-riemann-recovery-20260918/scale-small/riemann-scaling-r0.25-correctness.json"
+  },
+  "rows": [
+    {
+      "variant": "dense",
+      "step": 0,
+      "max_parameter_relative_error": 2.454737000334717e-07,
+      "max_momentum_relative_error": 0.0,
+      "logits_relative_error": 0.004903743974864483
+    },
+    {
+      "variant": "dense",
+      "step": 1,
+      "max_parameter_relative_error": 3.470329659194249e-07,
+      "max_momentum_relative_error": 0.0,
+      "logits_relative_error": 0.00390867842361331
+    },
+    {
+      "variant": "dense",
+      "step": 2,
+      "max_parameter_relative_error": 4.24626819039986e-07,
+      "max_momentum_relative_error": 0.0,
+      "logits_relative_error": 0.003622638527303934
+    },
+    {
+      "variant": "A",
+      "step": 0,
+      "max_parameter_relative_error": 1.1955559102716506e-06,
+      "max_momentum_relative_error": 1.3935181186752743e-06,
+      "logits_relative_error": 0.007512208074331284
+    },
+    {
+      "variant": "A",
+      "step": 1,
+      "max_parameter_relative_error": 1.5733684222141164e-06,
+      "max_momentum_relative_error": 2.947342181869317e-06,
+      "logits_relative_error": 0.006365252658724785
+    },
+    {
+      "variant": "A",
+      "step": 2,
+      "max_parameter_relative_error": 1.9157409951731097e-06,
+      "max_momentum_relative_error": 2.024948571488494e-06,
+      "logits_relative_error": 0.005723850801587105
+    },
+    {
+      "variant": "B",
+      "step": 0,
+      "max_parameter_relative_error": 1.1496503020680393e-06,
+      "max_momentum_relative_error": 1.2829307252104627e-06,
+      "logits_relative_error": 0.007349749095737934
+    },
+    {
+      "variant": "B",
+      "step": 1,
+      "max_parameter_relative_error": 1.5504707562286058e-06,
+      "max_momentum_relative_error": 1.5365267245215364e-06,
+      "logits_relative_error": 0.006153183523565531
+    },
+    {
+      "variant": "B",
+      "step": 2,
+      "max_parameter_relative_error": 1.8237710719404276e-06,
+      "max_momentum_relative_error": 1.80943425220903e-06,
+      "logits_relative_error": 0.005686103366315365
+    }
+  ]
+}

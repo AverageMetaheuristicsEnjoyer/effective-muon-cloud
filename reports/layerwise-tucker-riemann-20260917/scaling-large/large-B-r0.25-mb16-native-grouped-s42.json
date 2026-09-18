@@ -1,0 +1,31 @@
+{
+  "status": "oom",
+  "args": {
+    "variant": "B",
+    "rank_fraction": 0.25,
+    "microbatch": 16,
+    "sequence_length": 1024,
+    "tokens_per_step": 32768,
+    "warmup": 5,
+    "steps": 20,
+    "seed": 42,
+    "device": "cuda",
+    "tiny": false,
+    "layers": 32,
+    "width": 2560,
+    "heads": 20,
+    "ffn_hidden_size": 7040,
+    "optimizer": "riemannian",
+    "optimizer_implementation": "grouped",
+    "retraction_implementation": "cholesky",
+    "optimizer_batch_size": 4,
+    "tf32": false,
+    "execution": "reordered",
+    "compile_mode": "max-autotune",
+    "stable_grad_buffers": true,
+    "liger": false,
+    "profile": false,
+    "output": "/workspace-SR006.nfs2/layerwise-tucker-riemann-recovery-20260918/scale-large/riemann-scaling/large-B-r0.25-mb16-native-grouped-s42.json"
+  },
+  "error": "Traceback (most recent call last):\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 262, in main\n    result = measure(args)\n             ^^^^^^^^^^^^^\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 165, in measure\n    warmup = [step(False) for _ in range(args.warmup)]\n              ^^^^^^^^^^^\n  File \"/tmp/app.0/scripts/benchmark_layerwise_tucker.py\", line 122, in step\n    loss.backward()\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/_tensor.py\", line 647, in backward\n    torch.autograd.backward(\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/autograd/__init__.py\", line 354, in backward\n    _engine_run_backward(\n  File \"/home/user/conda/lib/python3.12/site-packages/torch/autograd/graph.py\", line 829, in _engine_run_backward\n    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntorch.OutOfMemoryError: CUDA out of memory. Tried to allocate 3.07 GiB. GPU 0 has a total capacity of 79.21 GiB of which 2.69 GiB is free. Including non-PyTorch memory, this process has 76.51 GiB memory in use. Of the allocated memory 73.16 GiB is allocated by PyTorch, with 56.72 GiB allocated in private pools (e.g., CUDA Graphs), and 2.23 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)\n"
+}
