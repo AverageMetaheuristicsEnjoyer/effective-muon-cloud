@@ -2,6 +2,12 @@
 set -uo pipefail
 RESULTS=${LAYERWISE_OPT_RESULTS:-/workspace-SR006.nfs3/layerwise-tucker-opt-20260917}
 MODE=${1:-screen}
+if [ "$MODE" = disk ]; then
+    df -h /tmp /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3
+    df -i /tmp /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3
+    du -h --max-depth=2 /workspace-SR006.nfs3/layerwise-tucker-riemann-20260917
+    exit $?
+fi
 if [ "$MODE" = export ]; then
     python3 - "$RESULTS" "${2:-screen}" "${3:-}" <<'PY'
 import base64
@@ -50,13 +56,13 @@ run() {
     export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 OMP_NUM_THREADS=4
     export PYTHONPATH="/tmp/layerwise-opt-deps:src:."
     export TORCHINDUCTOR_COMPILE_THREADS=4
-    export TORCHINDUCTOR_CACHE_DIR="$RESULTS/inductor-cache"
-    export TRITON_CACHE_DIR="$RESULTS/triton-cache"
+    export TORCHINDUCTOR_CACHE_DIR=/tmp/layerwise-opt-cache/inductor
+    export TRITON_CACHE_DIR=/tmp/layerwise-opt-cache/triton
     git rev-parse HEAD
     df -h "$RESULTS"
     df -i "$RESULTS"
-    python -m pip install --disable-pip-version-check --target /tmp/layerwise-opt-deps tiktoken loguru || return $?
-    python -m pip install --disable-pip-version-check --no-deps --target /tmp/layerwise-opt-deps liger-kernel==0.8.1 || return $?
+    python -m pip install --no-cache-dir --disable-pip-version-check --target /tmp/layerwise-opt-deps tiktoken loguru || return $?
+    python -m pip install --no-cache-dir --disable-pip-version-check --no-deps --target /tmp/layerwise-opt-deps liger-kernel==0.8.1 || return $?
     python -m unittest discover -s tests -p 'test_layerwise*.py' -v || return $?
     if [ "$MODE" = selftest ]; then
         for v in dense A B; do
