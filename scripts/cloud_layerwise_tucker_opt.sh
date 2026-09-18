@@ -19,6 +19,31 @@ if [ "$MODE" = recover ]; then
     python3 scripts/recover_layerwise_scaling.py "$RESULTS"
     exit $?
 fi
+if [ "$MODE" = summary ]; then
+    python3 - "$RESULTS" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for path in sorted((root / 'riemann-scaling').glob('*.json')):
+    raw = path.read_bytes()
+    r = json.loads(raw)
+    if path.name.startswith('manifest-'):
+        print('MANIFEST', path.name, r['status'], len(r['cases']), flush=True)
+        continue
+    result = {key: r.get(key) for key in ('status', 'args', 'commit', 'gpu', 'torch', 'parameters',
+              'initialization_ms', 'peak_allocated_bytes', 'peak_reserved_bytes', 'accumulation', 'final_geometry')}
+    result.update(file=path.name, sha256=hashlib.sha256(raw).hexdigest(),
+                  sample_count=len(r.get('samples', [])), warmup_count=len(r.get('warmup', [])),
+                  medians={key: value['median'] for key, value in r.get('summary', {}).items()},
+                  error=r.get('error', '')[-600:])
+    print('RESULT_SUMMARY', json.dumps(result), flush=True)
+for path in sorted(root.glob('*.exit')):
+    print('APPLICATION_EXIT', path.stem, path.read_text().strip(), flush=True)
+PY
+    exit $?
+fi
 if [ "$MODE" = export ]; then
     python3 - "$RESULTS" "${2:-screen}" "${3:-}" <<'PY'
 import base64
