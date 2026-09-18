@@ -1,5 +1,6 @@
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +23,7 @@ def main():
     parser.add_argument("--group", choices=GROUPS, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--reuse-results", type=Path)
     parser.add_argument("--riemannian", action="store_true")
     parser.add_argument("--tucker-implementation", choices=("reference", "grouped"), default="grouped")
     parser.add_argument("--retraction-implementation", choices=("reference", "grouped", "cholesky"), default="grouped")
@@ -69,6 +71,25 @@ def main():
         output = Path(case["output"])
         if output.exists():
             raise FileExistsError(output)
+        previous = args.reuse_results / output.name if args.reuse_results else None
+        if previous and previous.exists():
+            try:
+                result = json.loads(previous.read_text())
+            except json.JSONDecodeError:
+                result = {}
+            if result.get("status") in ("complete", "oom"):
+                old_args = result["args"]
+                tokens = iter(case["command"][2:])
+                for flag in tokens:
+                    value = True if flag in ("--liger", "--stable-grad-buffers") else next(tokens)
+                    if flag != "--output" and str(old_args[flag[2:].replace("-", "_")]) != str(value):
+                        raise ValueError(f"Cannot reuse mismatched configuration: {previous}: {flag}")
+                if old_args["tf32"] or old_args["optimizer_batch_size"] != 4:
+                    raise ValueError(f"Cannot reuse changed optimizer precision/grouping: {previous}")
+                shutil.copyfile(previous, output)
+                case.update(status=result["status"], reused_from=str(previous))
+                print("REUSED " + case["name"] + " " + case["status"], flush=True)
+                continue
         print("BEGIN " + case["name"], flush=True)
         start = time.monotonic()
         try:
@@ -84,9 +105,13 @@ def main():
             case["status"] = "timeout" if case["returncode"] == 124 else "process_failed"
             output.write_text(json.dumps(case, indent=2) + "\n")
         failed |= case["status"] not in ("complete", "oom")
-        manifest.write_text(json.dumps(dict(status="running", cases=cases), indent=2) + "\n")
+        pending = manifest.with_suffix(".json.tmp")
+        pending.write_text(json.dumps(dict(status="running", cases=cases), indent=2) + "\n")
+        pending.replace(manifest)
         print("END " + case["name"] + " " + case["status"], flush=True)
-    manifest.write_text(json.dumps(dict(status="failed" if failed else "complete", cases=cases), indent=2) + "\n")
+    pending = manifest.with_suffix(".json.tmp")
+    pending.write_text(json.dumps(dict(status="failed" if failed else "complete", cases=cases), indent=2) + "\n")
+    pending.replace(manifest)
     return int(failed)
 
 

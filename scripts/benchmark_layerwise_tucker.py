@@ -266,7 +266,9 @@ def main():
         result = {"status": "failed", "args": vars(args), "error": traceback.format_exc()}
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, indent=2) + "\n")
+    pending = path.with_suffix(path.suffix + ".tmp")
+    pending.write_text(json.dumps(result, indent=2) + "\n")
+    pending.replace(path)
     print(json.dumps({key: result[key] for key in ("status", "args", "parameters", "initialization_ms", "summary", "error") if key in result}), flush=True)
     return 0 if result["status"] == "complete" else 1
 

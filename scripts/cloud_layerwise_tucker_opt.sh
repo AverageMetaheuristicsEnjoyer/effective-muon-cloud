@@ -127,7 +127,9 @@ run() {
             timeout 1200 python scripts/validate_layerwise_riemannian.py --width "$width" --rank-fraction "$fraction" --retraction "$retraction" \
                 --output "$RESULTS/$MODE-r$fraction-correctness.json" || return $?
         done
-        python scripts/benchmark_layerwise_scaling.py --group "${2:-small}" --riemannian \
+        reuse=()
+        [ -n "${LAYERWISE_REUSE_RESULTS:-}" ] && reuse=(--reuse-results "$LAYERWISE_REUSE_RESULTS")
+        python scripts/benchmark_layerwise_scaling.py --group "${2:-small}" --riemannian "${reuse[@]}" \
             --tucker-implementation "${3:-grouped}" --retraction-implementation "${4:-grouped}" \
             --output-dir "$RESULTS/$MODE"
         return $?
