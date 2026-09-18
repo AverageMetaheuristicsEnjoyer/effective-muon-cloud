@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--tucker-implementation", choices=("reference", "grouped"), default="grouped")
     parser.add_argument("--retraction-implementation", choices=("reference", "grouped", "cholesky"), default="grouped")
     args = parser.parse_args()
+    if args.reuse_results and not args.reuse_results.is_dir():
+        parser.error(f"Previous result directory is missing: {args.reuse_results}")
     cases = []
     for profile in GROUPS[args.group]:
         layers, width, heads, ff = PROFILES[profile]
