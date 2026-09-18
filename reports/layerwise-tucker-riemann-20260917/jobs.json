@@ -53,13 +53,17 @@
       "planned_timing_runs": 90,
       "gpu_count": 1,
       "args": "riemann-scaling small grouped cholesky",
-      "last_observed_platform_status": "running",
+      "last_observed_platform_status": "completed",
       "running_at_unix": 1789673588,
       "startup_check_job": "lm-mpi-job-e43579f9-2c3c-4c39-96e8-e5b273c08950",
       "startup_observed_at_utc": "2026-09-17T19:37:05Z",
       "completed_correctness_files": 2,
       "startup_completed_timing_runs": 2,
-      "application_completion_verified": false
+      "application_completion_verified": true,
+      "application_exit": 1,
+      "outcome": "NFS3 inode exhaustion while saving wide B quarter microbatch 4",
+      "completed_timing_runs": 69,
+      "completed_at_unix": 1789678526
     },
     {
       "stage": "riemann-scaling-large",
@@ -70,12 +74,48 @@
       "planned_timing_runs": 60,
       "gpu_count": 1,
       "args": "riemann-scaling large grouped cholesky",
-      "last_observed_platform_status": "running",
+      "last_observed_platform_status": "completed",
       "running_at_unix": 1789673605,
       "startup_check_job": "lm-mpi-job-7f9f4e5a-71e6-4531-89ac-b09db6a9d40d",
       "startup_observed_at_utc": "2026-09-17T19:37:06Z",
       "completed_correctness_files": 2,
       "startup_completed_timing_runs": 0,
+      "application_completion_verified": true,
+      "application_exit": 1,
+      "outcome": "NFS3 inode exhaustion while saving large dense reference microbatch 4",
+      "completed_timing_runs": 27,
+      "oom_runs": 9,
+      "completed_at_unix": 1789678521
+    },
+    {
+      "stage": "recovery-backup-cleanup",
+      "job": "lm-mpi-job-fe2301b8-46b9-4550-a233-ba692c009db1",
+      "result_root": "/workspace-SR006.nfs2/layerwise-tucker-riemann-recovery-20260918",
+      "gpu_count": 0,
+      "verified_backup_files": 113,
+      "application_exit": 0,
+      "outcome": "SHA256-verified backup; removed only four old scale-small/scale-large compiler cache directories"
+    },
+    {
+      "stage": "riemann-recovery-small",
+      "job": "lm-mpi-job-dac9311a-ebc2-4c03-b896-57b7b649505b",
+      "source_commit": "0f8421bc04f5f392a31d1d377bef2cba76a60b3c",
+      "result_root": "/workspace-SR006.nfs2/layerwise-tucker-riemann-recovery-20260918/scale-small",
+      "created_at_unix": 1789718401,
+      "gpu_count": 1,
+      "planned_reused_cases": 69,
+      "planned_new_cases": 21,
+      "application_completion_verified": false
+    },
+    {
+      "stage": "riemann-recovery-large",
+      "job": "lm-mpi-job-6e4c929a-db17-4487-99eb-ed63ba07b562",
+      "source_commit": "0f8421bc04f5f392a31d1d377bef2cba76a60b3c",
+      "result_root": "/workspace-SR006.nfs2/layerwise-tucker-riemann-recovery-20260918/scale-large",
+      "created_at_unix": 1789718401,
+      "gpu_count": 1,
+      "planned_reused_cases": 36,
+      "planned_new_cases": 24,
       "application_completion_verified": false
     }
   ]
